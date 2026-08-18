@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<ArcGIS defaultAssembly="ArcGISPlayback.dll" defaultNamespace="NetworkChangePlaybackAddin"
+        xmlns="http://schemas.esri.com/DADF/Registry" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+        xsi:schemaLocation="http://schemas.esri.com/DADF/Registry file:///C:/Program Files/ArcGIS/Pro/bin/ArcGIS.Desktop.Framework.xsd">
+  <AddInInfo id="{AE11414D-8546-4325-B111-5A5D10516719}" name="ArcGIS Playback" version="0.1.0" desktopVersion="3.3" product="ArcGISPro">
+    <Name>ArcGIS Playback</Name>
+    <Description>Records portable Utility Network change packages for controlled production playback.</Description>
+    <Author>FortisAlberta</Author>
+    <Company>FortisAlberta</Company>
+    <Date>8/18/2026</Date>
+    <Subject>Utility Network migration</Subject>
+  </AddInInfo>
+  <modules>
+    <insertModule id="NetworkChangePlaybackAddin_Module" className="Module1" autoLoad="true" caption="ArcGIS Playback">
+      <tabs><tab id="NetworkChangePlaybackAddin_Tab" caption="ArcGIS Playback"><group refID="NetworkChangePlaybackAddin_RecordingGroup" /></tab></tabs>
+      <groups><group id="NetworkChangePlaybackAddin_RecordingGroup" caption="Change Packages" appearsOnAddInTab="false">
+        <button refID="NetworkChangePlaybackAddin_StartRecordingButton" size="large" />
+        <button refID="NetworkChangePlaybackAddin_StopRecordingButton" size="large" />
+        <button refID="NetworkChangePlaybackAddin_PlaybackRecordingButton" size="large" />
+      </group></groups>
+      <controls>
+        <button id="NetworkChangePlaybackAddin_StartRecordingButton" caption="Start Recording" className="Buttons.StartRecordingButton" loadOnClick="true">
+          <tooltip heading="Start Recording">Enter recording attribution and begin recording the active map.</tooltip>
+        </button>
+        <button id="NetworkChangePlaybackAddin_StopRecordingButton" caption="Save Recording" className="Buttons.StopRecordingButton" loadOnClick="true">
+          <tooltip heading="Save Recording">Stop recording and save the current package.</tooltip>
+        </button>
+        <button id="NetworkChangePlaybackAddin_PlaybackRecordingButton" caption="Playback Recording" className="Buttons.PlaybackRecordingButton" loadOnClick="true">
+          <tooltip heading="Playback Recording">Choose a package and replay it into the active map.</tooltip>
+        </button>
+      </controls>
+    </insertModule>
+  </modules>
+</ArcGIS>
