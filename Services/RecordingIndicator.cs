@@ -1,13 +1,9 @@
-using ArcGIS.Core.CIM;
-using ArcGIS.Core.Geometry;
-using ArcGIS.Desktop.Framework.Threading.Tasks;
 using ArcGIS.Desktop.Mapping;
 
 namespace NetworkChangePlaybackAddin.Services;
 
 internal sealed class RecordingIndicator
 {
-    private IDisposable? _extentGraphic;
     private MapViewOverlayControl? _label;
     private MapView? _mapView;
 
@@ -16,12 +12,6 @@ internal sealed class RecordingIndicator
         await HideAsync();
         var mapView = MapView.Active ?? throw new InvalidOperationException("Open and activate a map before recording.");
         _mapView = mapView;
-        await QueuedTask.Run(() =>
-        {
-            var outline = SymbolFactory.Instance.ConstructStroke(ColorFactory.Instance.RedRGB, 3.0, SimpleLineStyle.Solid);
-            var symbol = SymbolFactory.Instance.ConstructPolygonSymbol(null, outline).MakeSymbolReference();
-            _extentGraphic = mapView.AddOverlay(PolygonBuilderEx.CreatePolygon(mapView.Extent), symbol, -1, 1);
-        });
 
         var label = new System.Windows.Controls.Border
         {
@@ -41,15 +31,11 @@ internal sealed class RecordingIndicator
         mapView.AddOverlayControl(_label);
     }
 
-    internal async Task HideAsync()
+    internal Task HideAsync()
     {
         if (_label is not null && _mapView is not null) _mapView.RemoveOverlayControl(_label);
         _label = null;
         _mapView = null;
-        if (_extentGraphic is not null)
-        {
-            await QueuedTask.Run(() => _extentGraphic.Dispose());
-            _extentGraphic = null;
-        }
+        return Task.CompletedTask;
     }
 }

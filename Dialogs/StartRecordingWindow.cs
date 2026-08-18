@@ -1,5 +1,6 @@
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Media;
 using System.IO;
 using Microsoft.Win32;
 using NetworkChangePlaybackAddin.Models;
@@ -21,14 +22,20 @@ internal sealed class StartRecordingWindow : Window
     {
         Title = "Start Change Recording";
         Width = 460;
-        Height = 430;
+        Height = 610;
+        MinWidth = 460;
+        MinHeight = 530;
         WindowStartupLocation = WindowStartupLocation.CenterOwner;
+        Background = DialogAppearance.Background;
+        Foreground = DialogAppearance.Foreground;
         Content = BuildContent();
     }
 
     private UIElement BuildContent()
     {
-        var panel = new StackPanel { Margin = new Thickness(18) };
+        var panel = new StackPanel { Margin = new Thickness(22, 20, 22, 18) };
+        panel.Children.Add(DialogAppearance.SectionTitle("Record a pre-production work package"));
+        panel.Children.Add(new TextBlock { Text = "Enter the package attribution before starting the active-map recording.", Foreground = DialogAppearance.Foreground, Opacity = .72, Margin = new Thickness(0, 4, 0, 18) });
         AddField(panel, "Package name *", _name);
         AddField(panel, "Work order / reference", _workOrder);
         AddField(panel, "Source branch version *", _sourceVersion);
@@ -37,7 +44,8 @@ internal sealed class StartRecordingWindow : Window
         fileRow.ColumnDefinitions.Add(new ColumnDefinition());
         fileRow.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         fileRow.Children.Add(_filePath);
-        var browse = new Button { Content = "Browse…", Margin = new Thickness(8, 0, 0, 0), MinWidth = 76 };
+        var browse = DialogAppearance.SecondaryButton("Browse…", 82);
+        browse.Margin = new Thickness(8, 0, 0, 0);
         browse.Click += (_, _) => BrowseForFile();
         Grid.SetColumn(browse, 1);
         fileRow.Children.Add(browse);
@@ -45,20 +53,26 @@ internal sealed class StartRecordingWindow : Window
         AddField(panel, "Description", _description);
 
         var buttons = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right, Margin = new Thickness(0, 12, 0, 0) };
-        var cancel = new Button { Content = "Cancel", MinWidth = 88, Margin = new Thickness(0, 0, 8, 0) };
+        var cancel = DialogAppearance.SecondaryButton("Cancel", 88);
+        cancel.Margin = new Thickness(0, 0, 8, 0);
         cancel.Click += (_, _) => Close();
-        var start = new Button { Content = "Start recording", MinWidth = 116, IsDefault = true };
+        var start = DialogAppearance.PrimaryButton("Start recording", 116);
+        start.IsDefault = true;
         start.Click += (_, _) => Start();
         buttons.Children.Add(cancel);
         buttons.Children.Add(start);
         panel.Children.Add(buttons);
-        return panel;
+        var scroll = new ScrollViewer { VerticalScrollBarVisibility = ScrollBarVisibility.Auto, HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled, Content = panel };
+        return DialogAppearance.WithChrome(this, "Start Recording", scroll);
     }
 
     private static void AddField(Panel panel, string label, Control input)
     {
-        panel.Children.Add(new TextBlock { Text = label, Margin = new Thickness(0, 0, 0, 4) });
+        panel.Children.Add(new TextBlock { Text = label, Foreground = DialogAppearance.Foreground, Margin = new Thickness(0, 0, 0, 4) });
         input.Margin = new Thickness(0, 0, 0, 10);
+        input.Background = DialogAppearance.InputBackground;
+        input.Foreground = DialogAppearance.Foreground;
+        input.BorderBrush = DialogAppearance.Border;
         panel.Children.Add(input);
     }
 

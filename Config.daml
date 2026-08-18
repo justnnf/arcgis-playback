@@ -19,15 +19,9 @@
         <button refID="NetworkChangePlaybackAddin_PlaybackRecordingButton" size="large" />
       </group></groups>
       <controls>
-        <button id="NetworkChangePlaybackAddin_StartRecordingButton" caption="Start Recording" className="Buttons.StartRecordingButton" loadOnClick="true">
-          <tooltip heading="Start Recording">Enter recording attribution and begin recording the active map.</tooltip>
-        </button>
-        <button id="NetworkChangePlaybackAddin_StopRecordingButton" caption="Save Recording" className="Buttons.StopRecordingButton" loadOnClick="true">
-          <tooltip heading="Save Recording">Stop recording and save the current package.</tooltip>
-        </button>
-        <button id="NetworkChangePlaybackAddin_PlaybackRecordingButton" caption="Playback Recording" className="Buttons.PlaybackRecordingButton" loadOnClick="true">
-          <tooltip heading="Playback Recording">Choose a package and replay it into the active map.</tooltip>
-        </button>
+        <button id="NetworkChangePlaybackAddin_StartRecordingButton" caption="Start Recording" className="Buttons.StartRecordingButton" loadOnClick="true" smallImage="Images\StartRecording.png" largeImage="Images\StartRecording.png"><tooltip heading="Start Recording">Enter recording attribution and begin recording the active map.</tooltip></button>
+        <button id="NetworkChangePlaybackAddin_StopRecordingButton" caption="Save Recording" className="Buttons.StopRecordingButton" loadOnClick="true" smallImage="Images\SaveRecording.png" largeImage="Images\SaveRecording.png"><tooltip heading="Save Recording">Stop recording and save the current package.</tooltip></button>
+        <button id="NetworkChangePlaybackAddin_PlaybackRecordingButton" caption="Playback Recording" className="Buttons.PlaybackRecordingButton" loadOnClick="true" smallImage="Images\PlaybackRecording.png" largeImage="Images\PlaybackRecording.png"><tooltip heading="Playback Recording">Choose a package and replay it into the active map.</tooltip></button>
       </controls>
     </insertModule>
   </modules>

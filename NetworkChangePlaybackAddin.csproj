@@ -1,4 +1,5 @@
 <Project Sdk="Microsoft.NET.Sdk">
+  <Import Project="Configuration\BuildVersion.props" />
   <PropertyGroup>
     <TargetFramework>net8.0-windows7.0</TargetFramework>
     <RuntimeIdentifier>win-x64</RuntimeIdentifier>
@@ -12,6 +13,8 @@
     <Nullable>enable</Nullable>
     <RootNamespace>NetworkChangePlaybackAddin</RootNamespace>
     <AssemblyName>ArcGISPlayback</AssemblyName>
+    <ReleaseDirectory>$(ProjectDir)release\</ReleaseDirectory>
+    <ReleasePackageFileName>ArcGISPlayback.ArcPro.3.3.v.$(ArcGISPlaybackVersion).esriAddinX</ReleasePackageFileName>
   </PropertyGroup>
 
   <!-- Compile against the Pro 3.3 API, even when a newer Pro installation is present. -->
@@ -19,8 +22,18 @@
     <PackageReference Include="Esri.ArcGISPro.Extensions30" Version="3.3.0.52636" PrivateAssets="all" ExcludeAssets="build" />
   </ItemGroup>
 
-  <ItemGroup><Content Include="Config.daml" /></ItemGroup>
+  <ItemGroup>
+    <Content Include="Config.daml" />
+    <Content Include="Images\*.png" />
+  </ItemGroup>
   <!-- Use the installed SDK only for packaging; API references remain pinned to 3.3 above. -->
   <Import Project="C:\Program Files\ArcGIS\Pro\bin\Esri.ProApp.SDK.Desktop.targets"
           Condition="Exists('C:\Program Files\ArcGIS\Pro\bin\Esri.ProApp.SDK.Desktop.targets')" />
+
+  <Target Name="CopyPackageToRelease" AfterTargets="PackageArcGISContents">
+    <MakeDir Directories="$(ReleaseDirectory)" />
+    <Copy SourceFiles="$(PackageFile)"
+          DestinationFiles="$(ReleaseDirectory)$(ReleasePackageFileName)"
+          Condition="Exists('$(PackageFile)')" />
+  </Target>
 </Project>

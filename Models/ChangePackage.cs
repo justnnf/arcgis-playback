@@ -5,7 +5,7 @@ namespace NetworkChangePlaybackAddin.Models;
 public sealed class ChangePackage
 {
     public const string Format = "fortisalberta.utility-network-change-package";
-    public const int CurrentFormatVersion = 1;
+    public const int CurrentFormatVersion = 2;
 
     public string PackageFormat { get; init; } = Format;
     public int FormatVersion { get; init; } = CurrentFormatVersion;
@@ -34,6 +34,9 @@ public sealed record ChangeOperation
     public ChangeOperationType Type { get; init; }
     public string? LayerName { get; init; }
     public string? SourceGlobalId { get; init; }
+    // Stable only inside this package. It links later edits/associations to assets created
+    // during the same recording after production assigns different GlobalIDs.
+    public string? PackageFeatureId { get; init; }
     public string? FacilityId { get; init; }
     public long? SourceObjectId { get; init; }
     public JsonObject? Before { get; init; }
@@ -45,9 +48,14 @@ public enum ChangeOperationType { AddFeature, UpdateFeature, DeleteFeature, AddA
 
 public sealed class AssociationReference
 {
+    public string? SourceAssociationGlobalId { get; init; }
     public string AssociationType { get; init; } = string.Empty;
     public FeatureReference From { get; init; } = new();
     public FeatureReference To { get; init; } = new();
+    public long? FromTerminalId { get; init; }
+    public long? ToTerminalId { get; init; }
+    public bool? IsContentVisible { get; init; }
+    public double? PercentAlong { get; init; }
 }
 
 public sealed class FeatureReference
@@ -56,4 +64,6 @@ public sealed class FeatureReference
     public string? SourceGlobalId { get; init; }
     public string? FacilityId { get; init; }
     public string? PackageFeatureId { get; init; }
+    public int? AssetGroup { get; init; }
+    public int? AssetType { get; init; }
 }
