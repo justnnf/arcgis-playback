@@ -7,8 +7,6 @@ namespace NetworkChangePlaybackAddin.Buttons;
 
 internal sealed class PreviewPlaybackButton : Button
 {
-    private static readonly PlaybackPreviewOverlay Preview = new();
-
     protected override void OnClick() => PreviewAsync();
 
     private async void PreviewAsync()
@@ -19,8 +17,8 @@ internal sealed class PreviewPlaybackButton : Button
         {
             var package = PackageRecorder.Read(window.FilePath);
             await new PlaybackService().ZoomToRecordedExtentAsync(package);
-            await Preview.ShowAsync(package);
-            MessageBox.Show("Preview drawn. Blue = add, gold = update, red = delete. No edits were made.", "ArcGIS Playback");
+            await RecorderHost.Preview.ShowAsync(package);
+            MessageBox.Show("Preview drawn on the map. Blue = add/update; red = delete. No edits were made. Use Clear Preview to remove it.", "ArcGIS Playback");
         }
         catch (Exception ex) { MessageBox.Show($"Could not preview playback: {ex.Message}", "ArcGIS Playback"); }
     }
