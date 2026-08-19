@@ -25,6 +25,12 @@ internal sealed class VersionDifferenceCapture
     {
         "FIBERSPLICE", "FIBEROPTIC", "PURCHASEAREA"
     };
+    // This is a service-managed output of subnetwork operations, not a user edit
+    // that can be reproduced safely in a playback package.
+    private static readonly HashSet<string> ExcludedUtilityNetworkSources = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "ELECTRICSUBNETLINE"
+    };
     internal CaptureResult Capture(Map map, PackageMetadata requestedMetadata)
     {
         var previousToken = ServiceToken.Value;
@@ -163,7 +169,9 @@ internal sealed class VersionDifferenceCapture
             try
             {
                 using var table = GetTable(member);
-                if (names.Contains(table.GetName()) || IsSupplementalCaptureSource(member.Name) || IsSupplementalCaptureSource(table.GetName()))
+                if (IsExcludedUtilityNetworkSource(member.Name) || IsExcludedUtilityNetworkSource(table.GetName()))
+                    skipped.Add($"{member.Name}: excluded because it is a system-managed Utility Network output.");
+                else if (names.Contains(table.GetName()) || IsSupplementalCaptureSource(member.Name) || IsSupplementalCaptureSource(table.GetName()))
                     eligible.Add(member);
                 else skipped.Add($"{member.Name}: excluded because it is not a Utility Network source (for example, dirty areas and error layers are never captured).");
             }
@@ -177,6 +185,9 @@ internal sealed class VersionDifferenceCapture
 
     private static bool IsSupplementalCaptureSource(string name) =>
         SupplementalCaptureSources.Contains(NormalizeName(name));
+
+    private static bool IsExcludedUtilityNetworkSource(string name) =>
+        ExcludedUtilityNetworkSources.Contains(NormalizeName(name));
 
     private static bool SameNormalizedName(string left, string right) =>
         string.Equals(NormalizeName(left), NormalizeName(right), StringComparison.OrdinalIgnoreCase);
@@ -334,7 +345,7 @@ internal sealed class VersionDifferenceCapture
                 difference?["deletes"]?.AsArray(), operations);
         }
 
-        CaptureBranchAssociationDelta(client, serviceUrl, sourceVersion, defaultVersionName, serviceInfo, layerNames, operations);
+        CaptureBranchAssociationDelta(map, client, serviceUrl, sourceVersion, defaultVersionName, serviceInfo, layerNames, operations);
     }
 
     private static string? FeatureServiceUrl(MapMember member)
@@ -501,7 +512,7 @@ internal sealed class VersionDifferenceCapture
     // The differences endpoint does not include utility-network associations. Query
     // the affected endpoint elements in both versions and derive association adds and
     // deletes from their authoritative association snapshots.
-    private static void CaptureBranchAssociationDelta(EsriHttpClient client, string featureServiceUrl, string sourceVersion,
+    private static void CaptureBranchAssociationDelta(Map map, EsriHttpClient client, string featureServiceUrl, string sourceVersion,
         string defaultVersionName, JsonNode serviceInfo, IReadOnlyDictionary<int, string> layerNames, List<ChangeOperation> operations)
     {
         var affected = operations.Where(operation => operation.Type is ChangeOperationType.AddFeature or ChangeOperationType.UpdateFeature or ChangeOperationType.DeleteFeature)
@@ -514,9 +525,9 @@ internal sealed class VersionDifferenceCapture
         if (serviceInfo["utilityNetworkLayerId"] is null) return;
 
         var utilityUrl = featureServiceUrl.Replace("/FeatureServer", "/UtilityNetworkServer", StringComparison.OrdinalIgnoreCase).TrimEnd('/');
-        var utilityInfo = GetJson(client, $"{utilityUrl}?f=json");
-        var networkSources = UtilityNetworkSources(utilityInfo);
-        if (networkSources.Count == 0) return; // The service has no utility network.
+        var networkSources = UtilityNetworkSources(map);
+        if (networkSources.Count == 0)
+            throw new InvalidOperationException("The active Utility Network did not expose source IDs needed to capture association changes.");
 
         var sourceByName = networkSources.Values.ToDictionary(source => source.Name, StringComparer.OrdinalIgnoreCase);
         var sourceById = networkSources;
@@ -641,13 +652,14 @@ internal sealed class VersionDifferenceCapture
         _ => throw new InvalidOperationException($"Unsupported Utility Network association type '{type}'.")
     };
 
-    private static Dictionary<int, NetworkSourceInfo> UtilityNetworkSources(JsonNode utilityInfo)
+    private static Dictionary<int, NetworkSourceInfo> UtilityNetworkSources(Map map)
     {
-        var nodes = utilityInfo["networkSources"]?.AsArray()
-            ?? utilityInfo["utilityNetworkDefinition"]?["networkSources"]?.AsArray()
-            ?? [];
-        return nodes.Where(node => node?["sourceId"] is not null && node?["name"] is not null)
-            .Select(node => new NetworkSourceInfo(node!["sourceId"]!.GetValue<int>(), node["name"]!.ToString()))
+        var networkLayer = map.GetLayersAsFlattenedList().OfType<UtilityNetworkLayer>().FirstOrDefault();
+        if (networkLayer is null) return [];
+        using var utilityNetwork = networkLayer.GetUtilityNetwork();
+        using var definition = utilityNetwork.GetDefinition();
+        return definition.GetNetworkSources()
+            .Select(source => new NetworkSourceInfo(source.ID, source.Name))
             .ToDictionary(source => source.Id);
     }
 
