@@ -20,23 +20,27 @@ internal sealed class PlaybackPreviewOverlay
     internal async Task ShowAsync(ChangePackage package)
     {
         await ClearAsync();
-        var mapView = await System.Windows.Application.Current.Dispatcher.InvokeAsync(() => MapView.Active)
-            ?? throw new InvalidOperationException("Open and activate a map before previewing playback.");
-        var graphics = await QueuedTask.Run(() => package.Operations
-            .Where(operation => operation.Type is ChangeOperationType.AddFeature or ChangeOperationType.UpdateFeature or ChangeOperationType.DeleteFeature)
-            .Select(operation =>
-            {
-                var geometry = GeometryFromOperation(operation);
-                return geometry is null ? null : new PreviewGraphic(geometry, SymbolFor(operation.Type, geometry).MakeSymbolReference());
-            })
-            .Where(graphic => graphic is not null)
-            .Cast<PreviewGraphic>()
-            .ToList());
+        var preview = await QueuedTask.Run(() =>
+        {
+            var mapView = MapView.Active ?? throw new InvalidOperationException("Open and activate a map before previewing playback.");
+            var graphics = package.Operations
+                .Where(operation => operation.Type is ChangeOperationType.AddFeature or ChangeOperationType.UpdateFeature or ChangeOperationType.DeleteFeature)
+                .Select(operation =>
+                {
+                    var geometry = GeometryFromOperation(operation);
+                    return geometry is null ? null : new PreviewGraphic(geometry, SymbolFor(operation.Type, geometry).MakeSymbolReference());
+                })
+                .Where(graphic => graphic is not null)
+                .Cast<PreviewGraphic>()
+                .ToList();
+
+            foreach (var graphic in graphics) _graphics.Add(mapView.AddOverlay(graphic.Geometry, graphic.Symbol));
+            return new Preview(mapView, graphics.Count);
+        });
 
         await System.Windows.Application.Current.Dispatcher.InvokeAsync(() =>
         {
-            _mapView = mapView;
-            foreach (var graphic in graphics) _graphics.Add(mapView.AddOverlay(graphic.Geometry, graphic.Symbol));
+            _mapView = preview.MapView;
             _label = new MapViewOverlayControl(new Border
             {
                 Background = new SolidColorBrush(Color.FromArgb(235, 31, 35, 40)),
@@ -44,18 +48,21 @@ internal sealed class PlaybackPreviewOverlay
                 BorderThickness = new Thickness(1),
                 CornerRadius = new CornerRadius(4),
                 Padding = new Thickness(9, 5, 9, 5),
-                Child = new TextBlock { Text = $"PREVIEW ACTIVE  •  {graphics.Count} feature geometries\nBlue add/update  •  Red delete", Foreground = Brushes.White, FontWeight = FontWeights.SemiBold }
+                Child = new TextBlock { Text = $"PREVIEW ACTIVE  •  {preview.Count} feature geometries\nBlue add/update  •  Red delete", Foreground = Brushes.White, FontWeight = FontWeights.SemiBold }
             }, true, true, true, OverlayControlRelativePosition.TopLeft, .02, .08);
-            mapView.AddOverlayControl(_label);
+            preview.MapView.AddOverlayControl(_label);
         });
     }
 
     internal async Task ClearAsync()
     {
-        await System.Windows.Application.Current.Dispatcher.InvokeAsync(() =>
+        await QueuedTask.Run(() =>
         {
             foreach (var graphic in _graphics) graphic.Dispose();
             _graphics.Clear();
+        });
+        await System.Windows.Application.Current.Dispatcher.InvokeAsync(() =>
+        {
             if (_label is not null && _mapView is not null) _mapView.RemoveOverlayControl(_label);
             _label = null;
             _mapView = null;
@@ -92,4 +99,5 @@ internal sealed class PlaybackPreviewOverlay
     }
 
     private sealed record PreviewGraphic(ArcGIS.Core.Geometry.Geometry Geometry, CIMSymbolReference Symbol);
+    private sealed record Preview(MapView MapView, int Count);
 }
