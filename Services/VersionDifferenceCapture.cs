@@ -200,7 +200,14 @@ internal sealed class VersionDifferenceCapture
     {
         using var table = GetTable(member);
         using var datastore = table.GetDatastore();
-        return (datastore.GetConnector() as ServiceConnectionProperties)?.URL.ToString();
+        var url = (datastore.GetConnector() as ServiceConnectionProperties)?.URL.ToString();
+        if (string.IsNullOrWhiteSpace(url)) return null;
+
+        // Depending on the map's provenance, the service connector can expose
+        // either the FeatureServer root or a particular FeatureServer/<layerId>.
+        // The version-management and service-metadata endpoints require the root.
+        var marker = url.IndexOf("/FeatureServer", StringComparison.OrdinalIgnoreCase);
+        return marker < 0 ? null : url[..(marker + "/FeatureServer".Length)];
     }
 
     private static string CurrentVersionName(MapMember member)
@@ -212,25 +219,42 @@ internal sealed class VersionDifferenceCapture
         return version.GetName();
     }
 
-    private static Dictionary<int, string> ServiceLayerNames(JsonNode serviceInfo) => serviceInfo["layers"]?.AsArray()
-        .Concat(serviceInfo["tables"]?.AsArray() ?? [])
-        .Where(item => item?["id"] is not null && item?["name"] is not null)
-        .ToDictionary(item => item!["id"]!.GetValue<int>(), item => item!["name"]!.ToString())
-        ?? [];
+    private static Dictionary<int, string> ServiceLayerNames(JsonNode serviceInfo)
+    {
+        EnsureNoServiceError(serviceInfo, "reading feature-service metadata");
+        var layers = serviceInfo["layers"]?.AsArray() ?? [];
+        var tables = serviceInfo["tables"]?.AsArray() ?? [];
+        return layers.Concat(tables)
+            .Where(item => item?["id"] is not null && item?["name"] is not null)
+            .ToDictionary(item => item!["id"]!.GetValue<int>(), item => item!["name"]!.ToString());
+    }
 
     private static JsonNode GetJson(EsriHttpClient client, string url)
     {
         var response = client.Get(url).EnsureSuccessStatusCode();
-        return JsonNode.Parse(response.Content.ReadAsStringAsync().GetAwaiter().GetResult())
+        var document = JsonNode.Parse(response.Content.ReadAsStringAsync().GetAwaiter().GetResult())
             ?? throw new InvalidDataException("The feature service returned an empty response.");
+        EnsureNoServiceError(document, "reading the Version Management service");
+        return document;
     }
 
     private static JsonNode PostJson(EsriHttpClient client, string url, string body)
     {
         using var content = new StringContent(body, System.Text.Encoding.UTF8, "application/x-www-form-urlencoded");
         var response = client.Post(url, content).EnsureSuccessStatusCode();
-        return JsonNode.Parse(response.Content.ReadAsStringAsync().GetAwaiter().GetResult())
+        var document = JsonNode.Parse(response.Content.ReadAsStringAsync().GetAwaiter().GetResult())
             ?? throw new InvalidDataException("The Version Management service returned an empty response.");
+        EnsureNoServiceError(document, "requesting version differences");
+        return document;
+    }
+
+    private static void EnsureNoServiceError(JsonNode document, string stage)
+    {
+        var error = document["error"];
+        if (error is null) return;
+        var message = error["message"]?.ToString() ?? "The service did not provide an error message.";
+        var details = error["details"]?.AsArray().Select(item => item?.ToString()).Where(item => !string.IsNullOrWhiteSpace(item));
+        throw new InvalidOperationException($"The service failed while {stage}: {message}" + (details?.Any() == true ? $" ({string.Join("; ", details!)})" : string.Empty));
     }
 
     private static void CaptureObjectIds(Table source, string layerName, JsonArray? ids, ChangeOperationType type,

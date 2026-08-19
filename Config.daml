@@ -2,7 +2,7 @@
 <ArcGIS defaultAssembly="ArcGISPlayback.dll" defaultNamespace="NetworkChangePlaybackAddin"
         xmlns="http://schemas.esri.com/DADF/Registry" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
         xsi:schemaLocation="http://schemas.esri.com/DADF/Registry file:///C:/Program Files/ArcGIS/Pro/bin/ArcGIS.Desktop.Framework.xsd">
-  <AddInInfo id="{AE11414D-8546-4325-B111-5A5D10516719}" name="ArcGIS Playback" version="0.5.0" desktopVersion="3.3" product="ArcGISPro">
+  <AddInInfo id="{AE11414D-8546-4325-B111-5A5D10516719}" name="ArcGIS Playback" version="0.5.1" desktopVersion="3.3" product="ArcGISPro">
     <Name>ArcGIS Playback</Name>
     <Description>Record portable Utility Network change packages for controlled playback.</Description>
     <Author>J. Foltinek</Author>
