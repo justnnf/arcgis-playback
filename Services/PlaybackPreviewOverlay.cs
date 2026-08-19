@@ -16,7 +16,7 @@ internal sealed class PlaybackPreviewOverlay
     private MapViewOverlayControl? _label;
     private MapView? _mapView;
 
-    internal Task ShowAsync(ChangePackage package)
+    internal async Task ShowAsync(ChangePackage package)
     {
         Clear();
         var mapView = MapView.Active ?? throw new InvalidOperationException("Open and activate a map before previewing playback.");
@@ -26,7 +26,10 @@ internal sealed class PlaybackPreviewOverlay
         {
             var geometry = GeometryFromOperation(operation);
             if (geometry is null) continue;
-            _graphics.Add(mapView.AddOverlay(geometry, SymbolFor(operation.Type, geometry).MakeSymbolReference()));
+            // The synchronous overlay API requires the map view's owning UI thread.
+            // The asynchronous form marshals to that dispatcher for us, which is
+            // important because ribbon button handlers are not guaranteed to run there.
+            _graphics.Add(await mapView.AddOverlayAsync(geometry, SymbolFor(operation.Type, geometry).MakeSymbolReference()));
             count++;
         }
         _label = new MapViewOverlayControl(new Border
@@ -39,7 +42,6 @@ internal sealed class PlaybackPreviewOverlay
             Child = new TextBlock { Text = $"PREVIEW ACTIVE  •  {count} feature geometries\nBlue add/update  •  Red delete", Foreground = Brushes.White, FontWeight = FontWeights.SemiBold }
         }, true, true, true, OverlayControlRelativePosition.TopLeft, .02, .08);
         mapView.AddOverlayControl(_label);
-        return Task.CompletedTask;
     }
 
     internal void Clear()
