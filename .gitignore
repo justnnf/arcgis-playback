@@ -366,3 +366,7 @@ FodyWeavers.xsd
 
 # Locally recorded operational data must not be committed.
 *.unplayback.json
+/release/ArcGISPlayback.ArcPro.3.3.v.0.1.0.esriAddinX
+/release/ArcGISPlayback.ArcPro.3.3.v.0.2.0.esriAddinX
+/release/ArcGISPlayback.ArcPro.3.3.v.0.3.0.esriAddinX
+/release/ArcGISPlayback.ArcPro.3.3.v.0.4.0.esriAddinX
