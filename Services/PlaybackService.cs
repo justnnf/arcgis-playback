@@ -132,8 +132,13 @@ internal sealed class PlaybackService
                     var addEdit = NewEdit(package, operation);
                     var token = addEdit.Create(targetMember, attributes);
                     Execute(addEdit);
-                    if (!string.IsNullOrWhiteSpace(operation.PackageFeatureId) && token.ObjectID is long objectId)
-                        _createdRows[operation.PackageFeatureId] = new TargetRow(targetMember, objectId);
+                    if (token.ObjectID is long objectId)
+                    {
+                        var createdTarget = new TargetRow(targetMember, objectId);
+                        ApplyFacilityId(package, operation, createdTarget);
+                        if (!string.IsNullOrWhiteSpace(operation.PackageFeatureId))
+                            _createdRows[operation.PackageFeatureId] = createdTarget;
+                    }
                     result.Queued++;
                     Report(operation, "Applied");
                     _nextOperationIndex++;
@@ -157,6 +162,8 @@ internal sealed class PlaybackService
                 else
                     applyEdit.Modify(target.Member, target.ObjectId, EditableAttributes(target.Member, operation.After));
                 Execute(applyEdit);
+                if (operation.Type == ChangeOperationType.UpdateFeature)
+                    ApplyFacilityId(package, operation, target);
                 result.Queued++;
                 Report(operation, "Applied");
                 _nextOperationIndex++;
@@ -192,6 +199,25 @@ internal sealed class PlaybackService
     private static void Execute(EditOperation edit)
     {
         if (!edit.Execute()) throw new InvalidOperationException(edit.ErrorMessage ?? "ArcGIS Pro rejected the playback edit operation.");
+    }
+
+    // Some feature services apply defaults or attribute rules after Create and can
+    // silently replace a managed FacilityID supplied with that create. Write the
+    // captured identity in a separate edit after the row exists so version-delta
+    // packages preserve the same FacilityIDs as live-recorded packages.
+    private static void ApplyFacilityId(ChangePackage package, ChangeOperation operation, TargetRow target)
+    {
+        if (string.IsNullOrWhiteSpace(operation.FacilityId)) return;
+        using var table = GetTable(target.Member);
+        var field = table.GetDefinition().GetFields().FirstOrDefault(candidate =>
+            string.Equals(candidate.Name, "FACILITYID", StringComparison.OrdinalIgnoreCase));
+        if (field is null) return;
+        var facilityEdit = NewEdit(package, operation);
+        facilityEdit.Modify(target.Member, target.ObjectId, new Dictionary<string, object>
+        {
+            [field.Name] = operation.FacilityId
+        });
+        Execute(facilityEdit);
     }
 
     private static TargetRow? FindExistingTarget(Map map, MapMember targetMember, ChangeOperation operation)
