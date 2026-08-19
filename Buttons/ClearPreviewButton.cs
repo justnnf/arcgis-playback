@@ -6,9 +6,9 @@ namespace NetworkChangePlaybackAddin.Buttons;
 
 internal sealed class ClearPreviewButton : Button
 {
-    protected override void OnClick()
+    protected override async void OnClick()
     {
-        RecorderHost.Preview.Clear();
+        await RecorderHost.Preview.ClearAsync();
         MessageBox.Show("Playback preview cleared from the map.", "ArcGIS Playback");
     }
 }

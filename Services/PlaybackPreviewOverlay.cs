@@ -18,7 +18,7 @@ internal sealed class PlaybackPreviewOverlay
 
     internal async Task ShowAsync(ChangePackage package)
     {
-        Clear();
+        await ClearAsync();
         var mapView = MapView.Active ?? throw new InvalidOperationException("Open and activate a map before previewing playback.");
         _mapView = mapView;
         var count = 0;
@@ -32,25 +32,31 @@ internal sealed class PlaybackPreviewOverlay
             _graphics.Add(await mapView.AddOverlayAsync(geometry, SymbolFor(operation.Type, geometry).MakeSymbolReference()));
             count++;
         }
-        _label = new MapViewOverlayControl(new Border
+        await System.Windows.Application.Current.Dispatcher.InvokeAsync(() =>
         {
-            Background = new SolidColorBrush(Color.FromArgb(235, 31, 35, 40)),
-            BorderBrush = new SolidColorBrush(Color.FromRgb(0, 122, 194)),
-            BorderThickness = new Thickness(1),
-            CornerRadius = new CornerRadius(4),
-            Padding = new Thickness(9, 5, 9, 5),
-            Child = new TextBlock { Text = $"PREVIEW ACTIVE  •  {count} feature geometries\nBlue add/update  •  Red delete", Foreground = Brushes.White, FontWeight = FontWeights.SemiBold }
-        }, true, true, true, OverlayControlRelativePosition.TopLeft, .02, .08);
-        mapView.AddOverlayControl(_label);
+            _label = new MapViewOverlayControl(new Border
+            {
+                Background = new SolidColorBrush(Color.FromArgb(235, 31, 35, 40)),
+                BorderBrush = new SolidColorBrush(Color.FromRgb(0, 122, 194)),
+                BorderThickness = new Thickness(1),
+                CornerRadius = new CornerRadius(4),
+                Padding = new Thickness(9, 5, 9, 5),
+                Child = new TextBlock { Text = $"PREVIEW ACTIVE  •  {count} feature geometries\nBlue add/update  •  Red delete", Foreground = Brushes.White, FontWeight = FontWeights.SemiBold }
+            }, true, true, true, OverlayControlRelativePosition.TopLeft, .02, .08);
+            mapView.AddOverlayControl(_label);
+        });
     }
 
-    internal void Clear()
+    internal async Task ClearAsync()
     {
-        foreach (var graphic in _graphics) graphic.Dispose();
-        _graphics.Clear();
-        if (_label is not null && _mapView is not null) _mapView.RemoveOverlayControl(_label);
-        _label = null;
-        _mapView = null;
+        await System.Windows.Application.Current.Dispatcher.InvokeAsync(() =>
+        {
+            foreach (var graphic in _graphics) graphic.Dispose();
+            _graphics.Clear();
+            if (_label is not null && _mapView is not null) _mapView.RemoveOverlayControl(_label);
+            _label = null;
+            _mapView = null;
+        });
     }
 
     private static ArcGIS.Core.Geometry.Geometry? GeometryFromOperation(ChangeOperation operation)
