@@ -245,7 +245,7 @@ internal sealed class VersionDifferenceCapture
         // The versions resource commonly returns {GUID}, while Version Management
         // operation URLs require the bare GUID path segment.
         versionGuid = versionGuid.Trim().Trim('{', '}');
-        
+
         var serviceInfo = GetJson(client, $"{serviceUrl.TrimEnd('/')}?f=json");
         var layerNames = ServiceLayerNames(serviceInfo);
         var response = PostJson(client, $"{versionServiceUrl}/versions/{versionGuid}/differences",
