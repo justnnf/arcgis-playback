@@ -32,43 +32,44 @@ internal sealed class VersionDifferenceCapture
         if (string.Equals(sourceVersion, defaultVersionName, StringComparison.OrdinalIgnoreCase))
             throw new InvalidOperationException("Activate a named version before capturing changes. DEFAULT has no version delta to capture.");
 
-        using var defaultGeodatabase = defaultVersion.Connect();
         var operations = new List<ChangeOperation>();
         var capturedSources = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var skipped = new List<string>();
 
-        foreach (var member in members)
+        if (versionManager.GetVersioningType() == VersionType.Branch)
         {
-            using var sourceTable = GetTable(member);
-            var datasetName = sourceTable.GetName();
-            if (!capturedSources.Add(datasetName)) continue; // Subtype layers can expose the same source table.
+            // Branch-versioned maps are normally feature-service connections. Do not
+            // call Version.Connect here: client-server connections can return no direct
+            // DEFAULT geodatabase even though the REST Version Management API is valid.
+            CaptureBranchServiceDelta(members, operations, skipped);
+        }
+        else
+        {
+            using var defaultGeodatabase = defaultVersion.Connect()
+                ?? throw new InvalidOperationException("Could not open DEFAULT for the active enterprise geodatabase version.");
+            foreach (var member in members)
+            {
+                using var sourceTable = GetTable(member);
+                var datasetName = sourceTable.GetName();
+                if (!capturedSources.Add(datasetName)) continue; // Subtype layers can expose the same source table.
 
-            try
-            {
-                using var defaultTable = defaultGeodatabase.OpenDataset<Table>(datasetName);
-                CaptureRows(sourceTable, defaultTable, member.Name, DifferenceType.Insert, ChangeOperationType.AddFeature, operations);
-                CaptureRows(sourceTable, defaultTable, member.Name, DifferenceType.UpdateNoChange, ChangeOperationType.UpdateFeature, operations);
-                CaptureDeletedRows(sourceTable, defaultTable, member.Name, operations);
-            }
-            catch (NotSupportedException ex)
-            {
-                // The Pro SDK cannot obtain multi-branch differences over a feature-service
-                // connection. A Version Management Service implementation is the next adapter.
-                skipped.Add($"{member.Name}: {ex.Message}");
-            }
-            catch (GeodatabaseException ex)
-            {
-                skipped.Add($"{member.Name}: {ex.Message}");
+                try
+                {
+                    using var defaultTable = defaultGeodatabase.OpenDataset<Table>(datasetName);
+                    CaptureRows(sourceTable, defaultTable, member.Name, DifferenceType.Insert, ChangeOperationType.AddFeature, operations);
+                    CaptureRows(sourceTable, defaultTable, member.Name, DifferenceType.UpdateNoChange, ChangeOperationType.UpdateFeature, operations);
+                    CaptureDeletedRows(sourceTable, defaultTable, member.Name, operations);
+                }
+                catch (NotSupportedException ex) { skipped.Add($"{member.Name}: {ex.Message}"); }
+                catch (GeodatabaseException ex) { skipped.Add($"{member.Name}: {ex.Message}"); }
             }
         }
 
-        // Branch-version layers are normally feature-service connections. The SDK's
-        // Table.Differences deliberately rejects that mode, so use the server-side
-        // Version Management endpoint when every source took that path.
+        // A direct enterprise connection can still report client-server limitations.
         if (operations.Count == 0 && skipped.Count > 0)
         {
             skipped.Clear();
-            CaptureBranchServiceDelta(members, defaultGeodatabase, operations, skipped);
+            CaptureBranchServiceDelta(members, operations, skipped);
         }
 
         if (operations.Count == 0 && skipped.Count > 0)
@@ -145,8 +146,7 @@ internal sealed class VersionDifferenceCapture
         }
     }
 
-    private static void CaptureBranchServiceDelta(IReadOnlyList<MapMember> members, Geodatabase defaultGeodatabase,
-        List<ChangeOperation> operations, List<string> skipped)
+    private static void CaptureBranchServiceDelta(IReadOnlyList<MapMember> members, List<ChangeOperation> operations, List<string> skipped)
     {
         var serviceMembers = members.Select(member => new { Member = member, ServiceUrl = FeatureServiceUrl(member) })
             .Where(item => item.ServiceUrl is not null).ToList();
@@ -189,10 +189,9 @@ internal sealed class VersionDifferenceCapture
                 continue;
             }
             using var source = GetTable(member);
-            using var baseline = defaultGeodatabase.OpenDataset<Table>(source.GetName());
             CaptureObjectIds(source, member.Name, difference?["inserts"]?.AsArray(), ChangeOperationType.AddFeature, operations);
             CaptureObjectIds(source, member.Name, difference?["updates"]?.AsArray(), ChangeOperationType.UpdateFeature, operations);
-            CaptureDeletedObjectIds(baseline, member.Name, difference?["deletes"]?.AsArray(), operations);
+            CaptureDeletedObjectIdsViaService(client, serviceUrl, layerId.Value, source, member.Name, difference?["deletes"]?.AsArray(), operations);
         }
     }
 
@@ -298,6 +297,43 @@ internal sealed class VersionDifferenceCapture
             });
         }
     }
+
+    private static void CaptureDeletedObjectIdsViaService(EsriHttpClient client, string serviceUrl, int layerId, Table source,
+        string layerName, JsonArray? ids, List<ChangeOperation> operations)
+    {
+        if (ids is null || ids.Count == 0) return;
+        var objectIds = string.Join(",", ids.Select(item => item!.GetValue<long>()));
+        var result = PostJson(client, $"{serviceUrl.TrimEnd('/')}/{layerId}/query",
+            $"f=json&objectIds={Uri.EscapeDataString(objectIds)}&outFields=*&returnGeometry=true&gdbVersion=SDE.DEFAULT");
+        foreach (var feature in result["features"]?.AsArray() ?? [])
+        {
+            var attributes = RestAttributes(source, feature);
+            var objectId = feature?["attributes"]?[ObjectIdField(source)]?.GetValue<long>();
+            if (objectId is null) continue;
+            operations.Add(new ChangeOperation
+            {
+                Type = ChangeOperationType.DeleteFeature,
+                LayerName = layerName,
+                SourceObjectId = objectId,
+                SourceGlobalId = AttributeText(attributes, "GLOBALID"),
+                FacilityId = AttributeText(attributes, "FACILITYID"),
+                Before = attributes
+            });
+        }
+    }
+
+    private static JsonObject RestAttributes(Table source, JsonNode? feature)
+    {
+        var values = feature?["attributes"]?.DeepClone() as JsonObject ?? [];
+        if (feature?["geometry"] is null || source.GetDefinition() is not FeatureClassDefinition featureClassDefinition) return values;
+        values[featureClassDefinition.GetShapeField()] = feature["geometry"]!.DeepClone();
+        return values;
+    }
+
+    private static string ObjectIdField(Table table) => table.GetDefinition().GetObjectIDField();
+
+    private static string? AttributeText(JsonObject attributes, string fieldName) => attributes
+        .FirstOrDefault(item => string.Equals(item.Key, fieldName, StringComparison.OrdinalIgnoreCase)).Value?.ToString();
 
     private static string? FieldValue(Row row, string name)
     {
