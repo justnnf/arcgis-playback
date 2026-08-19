@@ -1,6 +1,7 @@
 using ArcGIS.Desktop.Framework.Contracts;
 using ArcGIS.Desktop.Framework.Dialogs;
 using ArcGIS.Desktop.Framework.Threading.Tasks;
+using ArcGIS.Desktop.Core;
 using ArcGIS.Desktop.Mapping;
 using NetworkChangePlaybackAddin.Dialogs;
 using NetworkChangePlaybackAddin.Services;
@@ -16,6 +17,14 @@ internal sealed class CaptureVersionChangesButton : Button
         if (RecorderHost.Recorder.ActivePackage is not null)
         {
             MessageBox.Show("Save the active recording before capturing version changes.", "ArcGIS Playback");
+            return;
+        }
+
+        // Differences are evaluated by the server. Local, unsaved Pro edits are not
+        // part of that state and would otherwise produce a misleading package.
+        if (Project.Current.HasEdits)
+        {
+            MessageBox.Show("Save or discard the current map edits before capturing version changes. Unsaved edits are not available to the version-difference service.", "ArcGIS Playback");
             return;
         }
 

@@ -12,7 +12,7 @@ ArcGIS Playback is an ArcGIS Pro 3.3 add-in for recording an editing session as 
 
 Use **Preview Playback** to draw a non-editing, point-and-line sketch of the recorded feature geometry in the active map. Blue represents adds, gold updates, and red deletes. During actual playback, a progress dialog lists each operation and its current result.
 
-If recording was not started, use **Capture Version Changes** while the active map is connected to a named version. It creates a package containing the final inserts, updates, and deletes in that version compared with `DEFAULT`; it does not recreate the original order of edits. The initial implementation captures feature and object-table deltas. Utility Network association deltas remain a follow-up item and must be captured through normal recording for now.
+If recording was not started, use **Capture Version Changes** while the active map is connected to a saved named version. It creates a package containing the final inserts, updates, deletes, and Utility Network association changes in that version compared with the service's configured `DEFAULT`; it does not recreate the original order of edits. The command stops rather than saving an incomplete package when the service reports rows or association endpoints it cannot read.
 
 ## Identity and target resolution
 
