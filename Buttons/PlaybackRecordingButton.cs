@@ -17,8 +17,14 @@ internal sealed class PlaybackRecordingButton : Button
         {
             var package = PackageRecorder.Read(window.FilePath);
             var player = new PlaybackService();
-            await player.ZoomToRecordedExtentAsync(package);
-            var result = await player.PlayAsync(package);
+            var progress = new PlaybackProgressWindow { Owner = System.Windows.Application.Current?.MainWindow };
+            player.ProgressChanged += progress.Report;
+            progress.Show();
+            PlaybackResult result;
+            try
+            {
+                await player.ZoomToRecordedExtentAsync(package);
+                result = await player.PlayAsync(package);
             while (result.PausedIssue is not null)
             {
                 var choice = System.Windows.MessageBox.Show(
@@ -30,6 +36,12 @@ internal sealed class PlaybackRecordingButton : Button
                     System.Windows.MessageBoxResult.No => PlaybackContinuation.Skip,
                     _ => PlaybackContinuation.Stop
                 });
+            }
+            }
+            finally
+            {
+                player.ProgressChanged -= progress.Report;
+                progress.Close();
             }
             var alreadySatisfied = result.AlreadySatisfied == 0 ? string.Empty : $"\n{result.AlreadySatisfied} association operation(s) were already satisfied.";
             var message = result.Stopped

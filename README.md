@@ -21,6 +21,8 @@ The build copies the package to `release\ArcGISPlayback.ArcPro.3.3.v<version>.es
 4. In the target production map/version, choose **Playback Recording**, select the package, and start playback.
 5. When target data cannot be resolved or an edit fails, playback pauses. Choose **Yes** after correcting data to retry, **No** to skip that operation, or **Cancel** to stop while retaining already-applied edits.
 
+Use **Preview Playback** to draw a non-editing, point-and-line sketch of the recorded feature geometry in the active map. Blue represents adds, gold updates, and red deletes. During actual playback, a progress dialog lists each operation and its current result.
+
 ## Identity and target resolution
 
 Production GlobalIDs are deliberately not used as a cross-environment key. Playback resolves rows using the package-local ID for a feature created earlier in the same playback, then `FacilityID` for an existing production feature, narrowed by source/table and subtype when available. For unkeyed spatial junctions, playback can use a unique subtype-matched location or an existing association to an already-resolved endpoint; ambiguous matches pause for review.

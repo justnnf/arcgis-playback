@@ -25,6 +25,7 @@
   <ItemGroup>
     <Content Include="Config.daml" />
     <Content Include="Images\*.png" />
+    <Content Include="DarkImages\*.png" />
   </ItemGroup>
   <!-- Use the installed SDK only for packaging; API references remain pinned to 3.3 above. -->
   <Import Project="C:\Program Files\ArcGIS\Pro\bin\Esri.ProApp.SDK.Desktop.targets"

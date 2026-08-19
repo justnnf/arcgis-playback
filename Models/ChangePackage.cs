@@ -36,6 +36,9 @@ public sealed record ChangeOperation
     public ChangeOperationType Type { get; init; }
     public string? LayerName { get; init; }
     public string? SourceGlobalId { get; init; }
+    // FacilityIDs of associated, existing assets (for example, a pole) that can
+    // anchor a feature with no FacilityID during replay, especially on delete.
+    public List<string>? AssociationAnchorFacilityIds { get; init; }
     // Stable only inside this package. It links later edits/associations to assets created
     // during the same recording after production assigns different GlobalIDs.
     public string? PackageFeatureId { get; init; }

@@ -18,6 +18,7 @@ internal sealed class PlaybackService
     private readonly Dictionary<string, TargetRow> _createdRows = new(StringComparer.Ordinal);
     private PlaybackResult? _result;
     private int _nextOperationIndex;
+    internal event Action<PlaybackProgress>? ProgressChanged;
 
     internal async Task<PlaybackResult> PlayAsync(ChangePackage package)
     {
@@ -77,16 +78,18 @@ internal sealed class PlaybackService
         while (_nextOperationIndex < operations.Count)
         {
             var operation = operations[_nextOperationIndex];
+            Report(operation, "Applying");
             if (operation.Type is ChangeOperationType.AddAssociation or ChangeOperationType.DeleteAssociation)
             {
                 try
                 {
-                    if (ApplyAssociation(package, operation, map, _createdRows)) result.Queued++;
-                    else result.AlreadySatisfied++;
+                    if (ApplyAssociation(package, operation, map, _createdRows)) { result.Queued++; Report(operation, "Applied"); }
+                    else { result.AlreadySatisfied++; Report(operation, "Already satisfied"); }
                 }
                 catch (Exception ex)
                 {
                     Pause(result, operation, $"#{operation.Sequence}: association could not be applied: {ex.Message}");
+                    Report(operation, "Paused", result.PausedIssue);
                     return result;
                 }
                 _nextOperationIndex++;
@@ -96,6 +99,7 @@ internal sealed class PlaybackService
             if (targetMember is null)
             {
                 Pause(result, operation, $"#{operation.Sequence}: {targetIssue}");
+                Report(operation, "Paused", result.PausedIssue);
                 return result;
             }
 
@@ -110,18 +114,20 @@ internal sealed class PlaybackService
                     if (!string.IsNullOrWhiteSpace(operation.PackageFeatureId) && token.ObjectID is long objectId)
                         _createdRows[operation.PackageFeatureId] = new TargetRow(targetMember, objectId);
                     result.Queued++;
+                    Report(operation, "Applied");
                     _nextOperationIndex++;
                     continue;
                 }
 
                 var target = !string.IsNullOrWhiteSpace(operation.PackageFeatureId) && _createdRows.TryGetValue(operation.PackageFeatureId, out var created)
                     ? created
-                    : FindExistingTarget(targetMember, operation);
+                    : FindExistingTarget(map, targetMember, operation);
                 if (target is null)
                 {
                     Pause(result, operation, string.IsNullOrWhiteSpace(operation.FacilityId)
                         ? $"#{operation.Sequence}: {operation.Type} needs FacilityID or a package-created feature reference."
                         : $"#{operation.Sequence}: no {operation.LayerName} with FacilityID '{operation.FacilityId}' was found.");
+                    Report(operation, "Paused", result.PausedIssue);
                     return result;
                 }
                 var applyEdit = NewEdit(package, operation);
@@ -131,18 +137,24 @@ internal sealed class PlaybackService
                     applyEdit.Modify(target.Member, target.ObjectId, EditableAttributes(target.Member, operation.After));
                 Execute(applyEdit);
                 result.Queued++;
+                Report(operation, "Applied");
                 _nextOperationIndex++;
             }
             catch (Exception ex)
             {
                 Pause(result, operation, $"#{operation.Sequence}: {ex.Message}");
+                Report(operation, "Paused", result.PausedIssue);
                 return result;
             }
         }
 
         result.Completed = true;
+        ProgressChanged?.Invoke(new PlaybackProgress(null, "Completed", $"{result.Queued} applied; {result.AlreadySatisfied} already satisfied; {result.Skipped.Count} skipped."));
         return result;
     }
+
+    private void Report(ChangeOperation operation, string state, string? detail = null) =>
+        ProgressChanged?.Invoke(new PlaybackProgress(operation, state, detail));
 
     private static void Pause(PlaybackResult result, ChangeOperation operation, string issue)
     {
@@ -161,9 +173,55 @@ internal sealed class PlaybackService
         if (!edit.Execute()) throw new InvalidOperationException(edit.ErrorMessage ?? "ArcGIS Pro rejected the playback edit operation.");
     }
 
-    private static TargetRow? FindExistingTarget(MapMember targetMember, ChangeOperation operation) =>
-        string.IsNullOrWhiteSpace(operation.FacilityId) ? null : FindObjectIdByFacilityId(targetMember, operation.FacilityId) is long objectId
-            ? new TargetRow(targetMember, objectId) : null;
+    private static TargetRow? FindExistingTarget(Map map, MapMember targetMember, ChangeOperation operation)
+    {
+        if (!string.IsNullOrWhiteSpace(operation.FacilityId) && FindObjectIdByFacilityId(targetMember, operation.FacilityId) is long objectId)
+            return new TargetRow(targetMember, objectId);
+
+        var reference = FeatureReferenceFromOperation(targetMember, operation);
+        if (FindObjectIdByLocation(targetMember, reference) is long spatialObjectId)
+            return new TargetRow(targetMember, spatialObjectId);
+
+        var anchors = operation.AssociationAnchorFacilityIds ?? [];
+        TargetRow? anchored = null;
+        foreach (var facilityId in anchors)
+        {
+            foreach (var member in map.GetLayersAsFlattenedList().OfType<FeatureLayer>().Cast<MapMember>()
+                .Concat(map.GetStandaloneTablesAsFlattenedList().Cast<MapMember>()))
+            {
+                long? anchorObjectId;
+                try { anchorObjectId = FindObjectIdByFacilityId(member, facilityId); }
+                catch (InvalidOperationException) { continue; }
+                if (anchorObjectId is null) continue;
+                if (FindAssociationAnchoredTarget(map, targetMember, reference, new TargetRow(member, anchorObjectId.Value)) is not long candidateObjectId) continue;
+                if (anchored is not null && anchored.ObjectId != candidateObjectId) return null;
+                anchored = new TargetRow(targetMember, candidateObjectId);
+            }
+        }
+        return anchored;
+    }
+
+    private static FeatureReference FeatureReferenceFromOperation(MapMember targetMember, ChangeOperation operation)
+    {
+        string? locationJson = null;
+        if (targetMember is FeatureLayer)
+        {
+            using var table = GetTable(targetMember);
+            using var definition = table.GetDefinition();
+            var geometryField = definition.GetFields().FirstOrDefault(field => field.FieldType == FieldType.Geometry);
+            var attributes = operation.After ?? operation.Before;
+            if (geometryField is not null && attributes?.TryGetPropertyValue(geometryField.Name, out var geometry) == true && geometry is not null)
+                locationJson = geometry.ToJsonString();
+        }
+        return new FeatureReference
+        {
+            LayerName = operation.LayerName,
+            FacilityId = operation.FacilityId,
+            AssetGroup = int.TryParse(AttributeValue(operation, "ASSETGROUP"), out var group) ? group : null,
+            AssetType = int.TryParse(AttributeValue(operation, "ASSETTYPE"), out var type) ? type : null,
+            LocationJson = locationJson
+        };
+    }
 
     private sealed record TargetRow(MapMember Member, long ObjectId);
 
@@ -477,5 +535,7 @@ internal sealed class PlaybackResult
     internal ChangeOperation? PausedOperation { get; set; }
     internal string? PausedIssue { get; set; }
 }
+
+internal sealed record PlaybackProgress(ChangeOperation? Operation, string State, string? Detail);
 
 internal enum PlaybackContinuation { Retry, Skip, Stop }

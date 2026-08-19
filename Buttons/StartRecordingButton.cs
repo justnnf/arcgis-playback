@@ -46,9 +46,18 @@ internal sealed class StartRecordingButton : Button
 
         using var table = sourceLayer.GetTable();
         if (table?.GetDatastore() is not Geodatabase geodatabase) return new RecordingContext("SDE.DEFAULT", extentJson);
-        using var versionManager = geodatabase.GetVersionManager();
-        using var version = versionManager.GetCurrentVersion();
-        return new RecordingContext(version.GetName(), extentJson);
+        try
+        {
+            using var versionManager = geodatabase.GetVersionManager();
+            using var version = versionManager.GetCurrentVersion();
+            return new RecordingContext(version.GetName(), extentJson);
+        }
+        catch (InvalidOperationException)
+        {
+            // File geodatabases and other local workspaces are not versioned. Recording
+            // remains valid; preserve that fact in the package rather than failing start.
+            return new RecordingContext("LOCAL (unversioned)", extentJson);
+        }
     }
 
     private sealed record RecordingContext(string SourceVersion, string? ExtentJson);

@@ -2,26 +2,28 @@
 <ArcGIS defaultAssembly="ArcGISPlayback.dll" defaultNamespace="NetworkChangePlaybackAddin"
         xmlns="http://schemas.esri.com/DADF/Registry" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
         xsi:schemaLocation="http://schemas.esri.com/DADF/Registry file:///C:/Program Files/ArcGIS/Pro/bin/ArcGIS.Desktop.Framework.xsd">
-  <AddInInfo id="{AE11414D-8546-4325-B111-5A5D10516719}" name="ArcGIS Playback" version="0.3.0" desktopVersion="3.3" product="ArcGISPro">
+  <AddInInfo id="{AE11414D-8546-4325-B111-5A5D10516719}" name="ArcGIS Playback" version="0.4.0" desktopVersion="3.3" product="ArcGISPro">
     <Name>ArcGIS Playback</Name>
-    <Description>Records portable Utility Network change packages for controlled production playback.</Description>
-    <Author>FortisAlberta</Author>
-    <Company>FortisAlberta</Company>
+    <Description>Record portable Utility Network change packages for controlled playback.</Description>
+    <Author>J. Foltinek</Author>
+    <Image>Images\ArcGISPlayback.png</Image>
     <Date>8/18/2026</Date>
     <Subject>Utility Network migration</Subject>
   </AddInInfo>
   <modules>
     <insertModule id="NetworkChangePlaybackAddin_Module" className="Module1" autoLoad="true" caption="ArcGIS Playback">
       <tabs><tab id="NetworkChangePlaybackAddin_Tab" caption="ArcGIS Playback"><group refID="NetworkChangePlaybackAddin_RecordingGroup" /></tab></tabs>
-      <groups><group id="NetworkChangePlaybackAddin_RecordingGroup" caption="Change Packages" appearsOnAddInTab="false">
+      <groups><group id="NetworkChangePlaybackAddin_RecordingGroup" caption="ArcGIS Playback" appearsOnAddInTab="false">
         <button refID="NetworkChangePlaybackAddin_StartRecordingButton" size="large" />
         <button refID="NetworkChangePlaybackAddin_StopRecordingButton" size="large" />
         <button refID="NetworkChangePlaybackAddin_PlaybackRecordingButton" size="large" />
+        <button refID="NetworkChangePlaybackAddin_PreviewPlaybackButton" size="large" />
       </group></groups>
       <controls>
         <button id="NetworkChangePlaybackAddin_StartRecordingButton" caption="Start Recording" className="Buttons.StartRecordingButton" loadOnClick="true" smallImage="Images\StartRecording.png" largeImage="Images\StartRecording.png"><tooltip heading="Start Recording">Enter recording attribution and begin recording the active map.</tooltip></button>
         <button id="NetworkChangePlaybackAddin_StopRecordingButton" caption="Save Recording" className="Buttons.StopRecordingButton" loadOnClick="true" smallImage="Images\SaveRecording.png" largeImage="Images\SaveRecording.png"><tooltip heading="Save Recording">Stop recording and save the current package.</tooltip></button>
         <button id="NetworkChangePlaybackAddin_PlaybackRecordingButton" caption="Playback Recording" className="Buttons.PlaybackRecordingButton" loadOnClick="true" smallImage="Images\PlaybackRecording.png" largeImage="Images\PlaybackRecording.png"><tooltip heading="Playback Recording">Choose a package and replay it into the active map.</tooltip></button>
+        <button id="NetworkChangePlaybackAddin_PreviewPlaybackButton" caption="Preview Playback" className="Buttons.PreviewPlaybackButton" loadOnClick="true" smallImage="Images\PreviewPlayback.png" largeImage="Images\PreviewPlayback.png"><tooltip heading="Preview Playback">Draw a non-editing point-and-line preview of a recorded package.</tooltip></button>
       </controls>
     </insertModule>
   </modules>

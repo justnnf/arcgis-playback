@@ -105,12 +105,14 @@ internal sealed class ProEditCapture
             if (type != ChangeOperationType.DeleteFeature)
                 _associationEndpoints[rowKey] = new AssociationEndpoint(tableName, row.GetObjectID());
             var attributes = Attributes(row, fields);
+            var sourceGlobalId = FieldValue(row, fields, "GLOBALID");
             _recorder.Record(new ChangeOperation
             {
                 Type = type,
                 LayerName = tableName,
                 SourceObjectId = row.GetObjectID(),
-                SourceGlobalId = FieldValue(row, fields, "GLOBALID"),
+                SourceGlobalId = sourceGlobalId,
+                AssociationAnchorFacilityIds = type == ChangeOperationType.DeleteFeature ? AssociationAnchorFacilityIds(sourceGlobalId) : null,
                 PackageFeatureId = _packageFeatureIds.GetValueOrDefault(rowKey),
                 FacilityId = FieldValue(row, fields, "FACILITYID"),
                 After = type == ChangeOperationType.DeleteFeature ? null : attributes,
@@ -287,6 +289,21 @@ internal sealed class ProEditCapture
 
     private string CanonicalTableName(string tableName) =>
         _networkSourceNames.TryGetValue(tableName, out var sourceName) ? sourceName : tableName;
+
+    private List<string>? AssociationAnchorFacilityIds(string? sourceGlobalId)
+    {
+        if (string.IsNullOrWhiteSpace(sourceGlobalId)) return null;
+        var anchors = _associationSnapshot.Values
+            .Select(association => string.Equals(association.From.SourceGlobalId, sourceGlobalId, StringComparison.OrdinalIgnoreCase)
+                ? association.To.FacilityId
+                : string.Equals(association.To.SourceGlobalId, sourceGlobalId, StringComparison.OrdinalIgnoreCase)
+                    ? association.From.FacilityId : null)
+            .Where(facilityId => !string.IsNullOrWhiteSpace(facilityId))
+            .Select(facilityId => facilityId!)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        return anchors.Count == 0 ? null : anchors;
+    }
 
     private static string AssociationKey(Association association, AssociationReference reference) =>
         string.IsNullOrWhiteSpace(reference.SourceAssociationGlobalId)
