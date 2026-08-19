@@ -1,6 +1,6 @@
 <Project>
   <!-- Change this one value for every distributable ArcGIS Playback build. -->
   <PropertyGroup>
-    <ArcGISPlaybackVersion>0.5.7</ArcGISPlaybackVersion>
+    <ArcGISPlaybackVersion>0.5.8</ArcGISPlaybackVersion>
   </PropertyGroup>
 </Project>

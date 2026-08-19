@@ -242,7 +242,10 @@ internal sealed class VersionDifferenceCapture
             .FirstOrDefault(item => string.Equals(item?["versionName"]?.ToString(), versionName, StringComparison.OrdinalIgnoreCase))?["versionGuid"]?.ToString();
         if (string.IsNullOrWhiteSpace(versionGuid))
             throw new InvalidOperationException($"The active version '{versionName}' was not returned by the Version Management service.");
-
+        // The versions resource commonly returns {GUID}, while Version Management
+        // operation URLs require the bare GUID path segment.
+        versionGuid = versionGuid.Trim().Trim('{', '}');
+        
         var serviceInfo = GetJson(client, $"{serviceUrl.TrimEnd('/')}?f=json");
         var layerNames = ServiceLayerNames(serviceInfo);
         var response = PostJson(client, $"{versionServiceUrl}/versions/{versionGuid}/differences",
