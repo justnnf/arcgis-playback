@@ -39,6 +39,8 @@ internal sealed class PlaybackPreviewOverlay
                 .ToList();
 
             foreach (var graphic in graphics) _graphics.Add(mapView.AddOverlay(graphic.Geometry, graphic.Symbol));
+            if (graphics.Count > 0)
+                mapView.ZoomTo(GeometryEngine.Instance.Union(graphics.Select(graphic => graphic.Geometry)).Extent);
             return new Preview(mapView, graphics.Count);
         });
 
