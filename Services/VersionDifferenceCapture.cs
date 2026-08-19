@@ -19,6 +19,12 @@ internal sealed class VersionDifferenceCapture
 {
     private const int QueryBatchSize = 200;
     private static readonly AsyncLocal<string?> ServiceToken = new();
+    // Supporting versioned feature classes used by this network that are not Utility
+    // Network topology sources, but must move with the captured network edits.
+    private static readonly HashSet<string> SupplementalCaptureSources = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "FIBERSPLICE", "FIBEROPTIC", "PURCHASEAREA"
+    };
     internal CaptureResult Capture(Map map, PackageMetadata requestedMetadata)
     {
         var previousToken = ServiceToken.Value;
@@ -157,7 +163,8 @@ internal sealed class VersionDifferenceCapture
             try
             {
                 using var table = GetTable(member);
-                if (names.Contains(table.GetName())) eligible.Add(member);
+                if (names.Contains(table.GetName()) || IsSupplementalCaptureSource(member.Name) || IsSupplementalCaptureSource(table.GetName()))
+                    eligible.Add(member);
                 else skipped.Add($"{member.Name}: excluded because it is not a Utility Network source (for example, dirty areas and error layers are never captured).");
             }
             catch (Exception ex) when (ex is InvalidOperationException or GeodatabaseException)
@@ -167,6 +174,14 @@ internal sealed class VersionDifferenceCapture
         }
         return eligible;
     }
+
+    private static bool IsSupplementalCaptureSource(string name) =>
+        SupplementalCaptureSources.Contains(NormalizeName(name));
+
+    private static bool SameNormalizedName(string left, string right) =>
+        string.Equals(NormalizeName(left), NormalizeName(right), StringComparison.OrdinalIgnoreCase);
+
+    private static string NormalizeName(string name) => string.Concat(name.Where(char.IsLetterOrDigit));
 
     // Subtype group child layers frequently have a subtype display name instead of
     // the service's Utility Network source name. Resolve them through the UN table
@@ -302,6 +317,7 @@ internal sealed class VersionDifferenceCapture
             }
             var serviceMember = serviceMembers.FirstOrDefault(item => item.LayerId == layerId)
                 ?? serviceMembers.FirstOrDefault(item => string.Equals(item.DatasetName, sourceName, StringComparison.OrdinalIgnoreCase))
+                ?? serviceMembers.FirstOrDefault(item => SameNormalizedName(item.Member.Name, sourceName) || SameNormalizedName(item.DatasetName, sourceName))
                 ?? (utilityNetworkMembers.TryGetValue(sourceName, out var utilityNetworkMember)
                     ? serviceMembers.FirstOrDefault(item => ReferenceEquals(item.Member, utilityNetworkMember))
                     : null);
