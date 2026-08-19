@@ -74,6 +74,14 @@ public sealed class PackageRecorder
             ?? throw new InvalidDataException("The selected file is not a change package.");
     }
 
+    public static void WritePackage(string path, ChangePackage package)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(path);
+        ArgumentNullException.ThrowIfNull(package);
+        package.LastSavedAtUtc = DateTimeOffset.UtcNow;
+        Write(path, JsonSerializer.Serialize(package, JsonOptions));
+    }
+
     private void SaveNow()
     {
         string? path;

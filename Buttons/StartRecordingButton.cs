@@ -20,7 +20,7 @@ internal sealed class StartRecordingButton : Button
             return;
         }
 
-        var recordingContext = await QueuedTask.Run(GetRecordingContext);
+        var recordingContext = await QueuedTask.Run(RecordingContextService.Get);
         var window = new StartRecordingWindow(recordingContext.SourceVersion, recordingContext.ExtentJson) { Owner = System.Windows.Application.Current?.MainWindow };
         if (window.ShowDialog() != true || window.Metadata is null || window.FilePath is null) return;
 
@@ -37,28 +37,4 @@ internal sealed class StartRecordingButton : Button
             MessageBox.Show($"Recording did not start: {ex.Message}", "ArcGIS Playback");
         }
     }
-
-    private static RecordingContext GetRecordingContext()
-    {
-        var extentJson = MapView.Active?.Extent?.ToJson();
-        var sourceLayer = MapView.Active?.Map?.GetLayersAsFlattenedList().OfType<FeatureLayer>().FirstOrDefault();
-        if (sourceLayer is null) return new RecordingContext("SDE.DEFAULT", extentJson);
-
-        using var table = sourceLayer.GetTable();
-        if (table?.GetDatastore() is not Geodatabase geodatabase) return new RecordingContext("SDE.DEFAULT", extentJson);
-        try
-        {
-            using var versionManager = geodatabase.GetVersionManager();
-            using var version = versionManager.GetCurrentVersion();
-            return new RecordingContext(version.GetName(), extentJson);
-        }
-        catch (InvalidOperationException)
-        {
-            // File geodatabases and other local workspaces are not versioned. Recording
-            // remains valid; preserve that fact in the package rather than failing start.
-            return new RecordingContext("LOCAL (unversioned)", extentJson);
-        }
-    }
-
-    private sealed record RecordingContext(string SourceVersion, string? ExtentJson);
 }

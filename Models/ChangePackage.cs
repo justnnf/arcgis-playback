@@ -26,7 +26,14 @@ public sealed class PackageMetadata
     public string SessionName { get; init; } = string.Empty;
     public string? Description { get; init; }
     public string RecordedBy { get; init; } = Environment.UserName;
+    // A captured package represents the final delta between a named version and
+    // DEFAULT; it is not an edit-by-edit journal.
+    public PackageOrigin Origin { get; init; } = PackageOrigin.LiveRecording;
+    public string? ComparedToVersion { get; init; }
+    public DateTimeOffset? CapturedAtUtc { get; init; }
 }
+
+public enum PackageOrigin { LiveRecording, VersionDifference }
 
 public sealed record ChangeOperation
 {

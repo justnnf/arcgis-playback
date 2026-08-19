@@ -20,11 +20,11 @@ internal sealed class StartRecordingWindow : Window
 
     private readonly string? _recordedMapExtentJson;
 
-    internal StartRecordingWindow(string sourceVersion, string? recordedMapExtentJson)
+    internal StartRecordingWindow(string sourceVersion, string? recordedMapExtentJson, bool captureVersionDelta = false)
     {
         _recordedMapExtentJson = recordedMapExtentJson;
         _sourceVersion = new TextBox { Text = string.IsNullOrWhiteSpace(sourceVersion) ? "SDE.DEFAULT" : sourceVersion, MinWidth = 280 };
-        Title = "Start Change Recording";
+        Title = captureVersionDelta ? "Capture Version Changes" : "Start Change Recording";
         Width = 460;
         Height = 610;
         MinWidth = 460;
@@ -32,14 +32,14 @@ internal sealed class StartRecordingWindow : Window
         WindowStartupLocation = WindowStartupLocation.CenterOwner;
         Background = DialogAppearance.Background;
         Foreground = DialogAppearance.Foreground;
-        Content = BuildContent();
+        Content = BuildContent(captureVersionDelta);
     }
 
-    private UIElement BuildContent()
+    private UIElement BuildContent(bool captureVersionDelta)
     {
         var panel = new StackPanel { Margin = new Thickness(22, 20, 22, 18) };
-        panel.Children.Add(DialogAppearance.SectionTitle("Record a pre-production work package"));
-        panel.Children.Add(new TextBlock { Text = "Enter the package attribution before starting the active-map recording.", Foreground = DialogAppearance.Foreground, Opacity = .72, Margin = new Thickness(0, 4, 0, 18) });
+        panel.Children.Add(DialogAppearance.SectionTitle(captureVersionDelta ? "Capture the current version delta" : "Record a pre-production work package"));
+        panel.Children.Add(new TextBlock { Text = captureVersionDelta ? "Create a playback package from the current named version compared with DEFAULT." : "Enter the package attribution before starting the active-map recording.", Foreground = DialogAppearance.Foreground, Opacity = .72, Margin = new Thickness(0, 4, 0, 18) });
         AddField(panel, "Package name *", _name);
         AddField(panel, "ArcFM session name *", _sessionName);
         AddField(panel, "Source branch version *", _sourceVersion);
@@ -60,7 +60,7 @@ internal sealed class StartRecordingWindow : Window
         var cancel = DialogAppearance.SecondaryButton("Cancel", 88);
         cancel.Margin = new Thickness(0, 0, 8, 0);
         cancel.Click += (_, _) => Close();
-        var start = DialogAppearance.PrimaryButton("Start recording", 116);
+        var start = DialogAppearance.PrimaryButton(captureVersionDelta ? "Capture package" : "Start recording", 116);
         start.IsDefault = true;
         start.Click += (_, _) => Start();
         buttons.Children.Add(cancel);

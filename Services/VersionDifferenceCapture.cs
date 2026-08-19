@@ -1,0 +1,305 @@
+using System.Text.Json.Nodes;
+using System.Net.Http;
+using System.IO;
+using ArcGIS.Core.Data;
+using ArcGIS.Core.Data.Exceptions;
+using ArcGIS.Desktop.Core;
+using ArcGIS.Desktop.Mapping;
+using NetworkChangePlaybackAddin.Models;
+
+namespace NetworkChangePlaybackAddin.Services;
+
+/// <summary>
+/// Builds a state-delta package from a named version and its DEFAULT ancestor.
+/// This intentionally emits final row state, not the user's original edit sequence.
+/// </summary>
+internal sealed class VersionDifferenceCapture
+{
+    internal CaptureResult Capture(Map map, PackageMetadata requestedMetadata)
+    {
+        var members = MapMembers(map).ToList();
+        if (members.Count == 0) throw new InvalidOperationException("The active map has no feature layers or standalone tables to capture.");
+
+        using var firstTable = GetTable(members[0]);
+        if (firstTable.GetDatastore() is not Geodatabase geodatabase || !geodatabase.IsVersioningSupported())
+            throw new InvalidOperationException("Capture Version Changes requires an enterprise geodatabase version.");
+
+        using var versionManager = geodatabase.GetVersionManager();
+        using var currentVersion = versionManager.GetCurrentVersion();
+        using var defaultVersion = versionManager.GetDefaultVersion();
+        var sourceVersion = currentVersion.GetName();
+        var defaultVersionName = defaultVersion.GetName();
+        if (string.Equals(sourceVersion, defaultVersionName, StringComparison.OrdinalIgnoreCase))
+            throw new InvalidOperationException("Activate a named version before capturing changes. DEFAULT has no version delta to capture.");
+
+        using var defaultGeodatabase = defaultVersion.Connect();
+        var operations = new List<ChangeOperation>();
+        var capturedSources = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var skipped = new List<string>();
+
+        foreach (var member in members)
+        {
+            using var sourceTable = GetTable(member);
+            var datasetName = sourceTable.GetName();
+            if (!capturedSources.Add(datasetName)) continue; // Subtype layers can expose the same source table.
+
+            try
+            {
+                using var defaultTable = defaultGeodatabase.OpenDataset<Table>(datasetName);
+                CaptureRows(sourceTable, defaultTable, member.Name, DifferenceType.Insert, ChangeOperationType.AddFeature, operations);
+                CaptureRows(sourceTable, defaultTable, member.Name, DifferenceType.UpdateNoChange, ChangeOperationType.UpdateFeature, operations);
+                CaptureDeletedRows(sourceTable, defaultTable, member.Name, operations);
+            }
+            catch (NotSupportedException ex)
+            {
+                // The Pro SDK cannot obtain multi-branch differences over a feature-service
+                // connection. A Version Management Service implementation is the next adapter.
+                skipped.Add($"{member.Name}: {ex.Message}");
+            }
+            catch (GeodatabaseException ex)
+            {
+                skipped.Add($"{member.Name}: {ex.Message}");
+            }
+        }
+
+        // Branch-version layers are normally feature-service connections. The SDK's
+        // Table.Differences deliberately rejects that mode, so use the server-side
+        // Version Management endpoint when every source took that path.
+        if (operations.Count == 0 && skipped.Count > 0)
+        {
+            skipped.Clear();
+            CaptureBranchServiceDelta(members, defaultGeodatabase, operations, skipped);
+        }
+
+        if (operations.Count == 0 && skipped.Count > 0)
+            throw new InvalidOperationException("No version changes could be read. " + string.Join(" ", skipped));
+
+        var metadata = new PackageMetadata
+        {
+            Name = requestedMetadata.Name,
+            SourceEnvironment = requestedMetadata.SourceEnvironment,
+            SourceBranchVersion = sourceVersion,
+            RecordedMapExtentJson = requestedMetadata.RecordedMapExtentJson,
+            SessionName = requestedMetadata.SessionName,
+            Description = requestedMetadata.Description,
+            RecordedBy = requestedMetadata.RecordedBy,
+            Origin = PackageOrigin.VersionDifference,
+            ComparedToVersion = defaultVersionName,
+            CapturedAtUtc = DateTimeOffset.UtcNow
+        };
+        var package = new ChangePackage { Metadata = metadata };
+        package.Operations.AddRange(operations.Select((operation, index) => operation with { Sequence = index + 1 }));
+        return new CaptureResult(package, skipped);
+    }
+
+    private static IEnumerable<MapMember> MapMembers(Map map) => map.GetLayersAsFlattenedList()
+        .OfType<FeatureLayer>().Cast<MapMember>()
+        .Concat(map.GetStandaloneTablesAsFlattenedList().Cast<MapMember>());
+
+    private static Table GetTable(MapMember member) => member switch
+    {
+        FeatureLayer layer => layer.GetTable(),
+        StandaloneTable table => table.GetTable(),
+        _ => throw new InvalidOperationException($"{member.Name} does not expose a table.")
+    };
+
+    private static void CaptureRows(Table source, Table baseline, string layerName, DifferenceType differenceType,
+        ChangeOperationType operationType, List<ChangeOperation> operations)
+    {
+        using var cursor = source.Differences(baseline, differenceType, null);
+        while (cursor.MoveNext())
+        {
+            using var row = cursor.Current;
+            var attributes = Attributes(row);
+            operations.Add(new ChangeOperation
+            {
+                Type = operationType,
+                LayerName = layerName,
+                SourceObjectId = row.GetObjectID(),
+                SourceGlobalId = FieldValue(row, "GLOBALID"),
+                FacilityId = FieldValue(row, "FACILITYID"),
+                PackageFeatureId = operationType == ChangeOperationType.AddFeature ? $"package:{Guid.NewGuid():N}" : null,
+                After = attributes
+            });
+        }
+    }
+
+    private static void CaptureDeletedRows(Table source, Table baseline, string layerName, List<ChangeOperation> operations)
+    {
+        using var cursor = source.Differences(baseline, DifferenceType.DeleteNoChange, null);
+        while (cursor.MoveNext())
+        {
+            var objectId = cursor.ObjectID;
+            using var rowCursor = baseline.Search(new QueryFilter { ObjectIDs = [objectId] }, false);
+            if (!rowCursor.MoveNext()) continue;
+            using var row = rowCursor.Current;
+            operations.Add(new ChangeOperation
+            {
+                Type = ChangeOperationType.DeleteFeature,
+                LayerName = layerName,
+                SourceObjectId = objectId,
+                SourceGlobalId = FieldValue(row, "GLOBALID"),
+                FacilityId = FieldValue(row, "FACILITYID"),
+                Before = Attributes(row)
+            });
+        }
+    }
+
+    private static void CaptureBranchServiceDelta(IReadOnlyList<MapMember> members, Geodatabase defaultGeodatabase,
+        List<ChangeOperation> operations, List<string> skipped)
+    {
+        var serviceMembers = members.Select(member => new { Member = member, ServiceUrl = FeatureServiceUrl(member) })
+            .Where(item => item.ServiceUrl is not null).ToList();
+        if (serviceMembers.Count == 0)
+            throw new InvalidOperationException("The active map is not connected to a version-enabled feature service.");
+
+        var serviceUrl = serviceMembers[0].ServiceUrl!;
+        if (serviceMembers.Any(item => !string.Equals(item.ServiceUrl, serviceUrl, StringComparison.OrdinalIgnoreCase)))
+            throw new InvalidOperationException("Capture Version Changes currently requires all captured layers to use one feature service.");
+
+        var client = new EsriHttpClient { ShowDialogs = true };
+        var versionServiceUrl = serviceUrl.Replace("/FeatureServer", "/VersionManagementServer", StringComparison.OrdinalIgnoreCase).TrimEnd('/');
+        var versions = GetJson(client, $"{versionServiceUrl}/versions?f=json");
+        var versionName = CurrentVersionName(serviceMembers[0].Member);
+        var versionGuid = versions["versions"]?.AsArray()
+            .FirstOrDefault(item => string.Equals(item?["versionName"]?.ToString(), versionName, StringComparison.OrdinalIgnoreCase))?["versionGuid"]?.ToString();
+        if (string.IsNullOrWhiteSpace(versionGuid))
+            throw new InvalidOperationException($"The active version '{versionName}' was not returned by the Version Management service.");
+
+        var serviceInfo = GetJson(client, $"{serviceUrl.TrimEnd('/')}?f=json");
+        var layerNames = ServiceLayerNames(serviceInfo);
+        var response = PostJson(client, $"{versionServiceUrl}/versions/{versionGuid}/differences",
+            "f=json&resultType=objectIds&async=false");
+        if (response["success"]?.GetValue<bool>() == false)
+            throw new InvalidOperationException(response["error"]?["message"]?.ToString() ?? "The Version Management service rejected the differences request.");
+
+        foreach (var difference in response["differences"]?.AsArray() ?? [])
+        {
+            var layerId = difference?["layerId"]?.GetValue<int>();
+            if (layerId is null || !layerNames.TryGetValue(layerId.Value, out var sourceName))
+            {
+                skipped.Add($"A service layer in the differences response could not be matched to the active map.");
+                continue;
+            }
+            var member = serviceMembers.Select(item => item.Member)
+                .FirstOrDefault(item => string.Equals(item.Name, sourceName, StringComparison.OrdinalIgnoreCase));
+            if (member is null)
+            {
+                skipped.Add($"{sourceName}: this changed service layer is not present in the active map.");
+                continue;
+            }
+            using var source = GetTable(member);
+            using var baseline = defaultGeodatabase.OpenDataset<Table>(source.GetName());
+            CaptureObjectIds(source, member.Name, difference?["inserts"]?.AsArray(), ChangeOperationType.AddFeature, operations);
+            CaptureObjectIds(source, member.Name, difference?["updates"]?.AsArray(), ChangeOperationType.UpdateFeature, operations);
+            CaptureDeletedObjectIds(baseline, member.Name, difference?["deletes"]?.AsArray(), operations);
+        }
+    }
+
+    private static string? FeatureServiceUrl(MapMember member)
+    {
+        using var table = GetTable(member);
+        using var datastore = table.GetDatastore();
+        return (datastore.GetConnector() as ServiceConnectionProperties)?.URL.ToString();
+    }
+
+    private static string CurrentVersionName(MapMember member)
+    {
+        using var table = GetTable(member);
+        if (table.GetDatastore() is not Geodatabase geodatabase) throw new InvalidOperationException("The feature service does not expose version information.");
+        using var manager = geodatabase.GetVersionManager();
+        using var version = manager.GetCurrentVersion();
+        return version.GetName();
+    }
+
+    private static Dictionary<int, string> ServiceLayerNames(JsonNode serviceInfo) => serviceInfo["layers"]?.AsArray()
+        .Concat(serviceInfo["tables"]?.AsArray() ?? [])
+        .Where(item => item?["id"] is not null && item?["name"] is not null)
+        .ToDictionary(item => item!["id"]!.GetValue<int>(), item => item!["name"]!.ToString())
+        ?? [];
+
+    private static JsonNode GetJson(EsriHttpClient client, string url)
+    {
+        var response = client.Get(url).EnsureSuccessStatusCode();
+        return JsonNode.Parse(response.Content.ReadAsStringAsync().GetAwaiter().GetResult())
+            ?? throw new InvalidDataException("The feature service returned an empty response.");
+    }
+
+    private static JsonNode PostJson(EsriHttpClient client, string url, string body)
+    {
+        using var content = new StringContent(body, System.Text.Encoding.UTF8, "application/x-www-form-urlencoded");
+        var response = client.Post(url, content).EnsureSuccessStatusCode();
+        return JsonNode.Parse(response.Content.ReadAsStringAsync().GetAwaiter().GetResult())
+            ?? throw new InvalidDataException("The Version Management service returned an empty response.");
+    }
+
+    private static void CaptureObjectIds(Table source, string layerName, JsonArray? ids, ChangeOperationType type,
+        List<ChangeOperation> operations)
+    {
+        if (ids is null || ids.Count == 0) return;
+        var objectIds = ids.Select(item => item!.GetValue<long>()).ToList();
+        using var cursor = source.Search(new QueryFilter { ObjectIDs = objectIds }, false);
+        while (cursor.MoveNext())
+        {
+            using var row = cursor.Current;
+            operations.Add(new ChangeOperation
+            {
+                Type = type,
+                LayerName = layerName,
+                SourceObjectId = row.GetObjectID(),
+                SourceGlobalId = FieldValue(row, "GLOBALID"),
+                FacilityId = FieldValue(row, "FACILITYID"),
+                PackageFeatureId = type == ChangeOperationType.AddFeature ? $"package:{Guid.NewGuid():N}" : null,
+                After = Attributes(row)
+            });
+        }
+    }
+
+    private static void CaptureDeletedObjectIds(Table baseline, string layerName, JsonArray? ids, List<ChangeOperation> operations)
+    {
+        if (ids is null || ids.Count == 0) return;
+        var objectIds = ids.Select(item => item!.GetValue<long>()).ToList();
+        using var cursor = baseline.Search(new QueryFilter { ObjectIDs = objectIds }, false);
+        while (cursor.MoveNext())
+        {
+            using var row = cursor.Current;
+            operations.Add(new ChangeOperation
+            {
+                Type = ChangeOperationType.DeleteFeature,
+                LayerName = layerName,
+                SourceObjectId = row.GetObjectID(),
+                SourceGlobalId = FieldValue(row, "GLOBALID"),
+                FacilityId = FieldValue(row, "FACILITYID"),
+                Before = Attributes(row)
+            });
+        }
+    }
+
+    private static string? FieldValue(Row row, string name)
+    {
+        using var definition = row.GetTable().GetDefinition();
+        var field = definition.GetFields().FirstOrDefault(item => string.Equals(item.Name, name, StringComparison.OrdinalIgnoreCase));
+        if (field is null) return null;
+        var value = row[field.Name];
+        return value is null or DBNull ? null : value.ToString();
+    }
+
+    private static JsonObject Attributes(Row row)
+    {
+        using var definition = row.GetTable().GetDefinition();
+        var values = new JsonObject();
+        foreach (var field in definition.GetFields())
+        {
+            if (field.FieldType is FieldType.Blob or FieldType.Raster) continue;
+            var value = row[field.Name];
+            if (value is null or DBNull) { values[field.Name] = null; continue; }
+            if (field.FieldType == FieldType.Geometry && row is Feature feature)
+                values[field.Name] = JsonNode.Parse(feature.GetShape().ToJson());
+            else
+                values[field.Name] = JsonValue.Create(value.ToString());
+        }
+        return values;
+    }
+}
+
+internal sealed record CaptureResult(ChangePackage Package, IReadOnlyList<string> SkippedSources);
