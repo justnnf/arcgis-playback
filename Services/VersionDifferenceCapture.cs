@@ -19,6 +19,18 @@ internal sealed class VersionDifferenceCapture
     private const int QueryBatchSize = 200;
     internal CaptureResult Capture(Map map, PackageMetadata requestedMetadata)
     {
+        try
+        {
+            return CaptureCore(map, requestedMetadata);
+        }
+        catch (NullReferenceException ex)
+        {
+            throw new InvalidOperationException("ArcGIS returned an incomplete layer or version object while reading the active map. Reconnect the map's versioned service and try again; no package was saved.", ex);
+        }
+    }
+
+    private CaptureResult CaptureCore(Map map, PackageMetadata requestedMetadata)
+    {
         var members = MapMembers(map).ToList();
         if (members.Count == 0) throw new InvalidOperationException("The active map has no feature layers or standalone tables to capture.");
 
@@ -26,9 +38,12 @@ internal sealed class VersionDifferenceCapture
         if (firstTable.GetDatastore() is not Geodatabase geodatabase || !geodatabase.IsVersioningSupported())
             throw new InvalidOperationException("Capture Version Changes requires an enterprise geodatabase version.");
 
-        using var versionManager = geodatabase.GetVersionManager();
-        using var currentVersion = versionManager.GetCurrentVersion();
-        using var defaultVersion = versionManager.GetDefaultVersion();
+        using var versionManager = geodatabase.GetVersionManager()
+            ?? throw new InvalidOperationException("The active enterprise geodatabase does not provide a version manager.");
+        using var currentVersion = versionManager.GetCurrentVersion()
+            ?? throw new InvalidOperationException("The active enterprise geodatabase did not provide the current version.");
+        using var defaultVersion = versionManager.GetDefaultVersion()
+            ?? throw new InvalidOperationException("The active enterprise geodatabase did not provide its default version.");
         var sourceVersion = currentVersion.GetName();
         var defaultVersionName = defaultVersion.GetName();
         if (string.Equals(sourceVersion, defaultVersionName, StringComparison.OrdinalIgnoreCase))
@@ -101,8 +116,8 @@ internal sealed class VersionDifferenceCapture
 
     private static Table GetTable(MapMember member) => member switch
     {
-        FeatureLayer layer => layer.GetTable(),
-        StandaloneTable table => table.GetTable(),
+        FeatureLayer layer => layer.GetTable() ?? throw new InvalidOperationException($"{layer.Name} does not currently expose a readable table. Remove the broken layer or reconnect it before capturing."),
+        StandaloneTable table => table.GetTable() ?? throw new InvalidOperationException($"{table.Name} does not currently expose a readable table. Remove the broken table or reconnect it before capturing."),
         _ => throw new InvalidOperationException($"{member.Name} does not expose a table.")
     };
 

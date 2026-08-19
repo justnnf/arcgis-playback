@@ -45,7 +45,8 @@ internal sealed class CaptureVersionChangesButton : Button
         }
         catch (Exception ex)
         {
-            MessageBox.Show($"Could not capture version changes: {ex.Message}", "ArcGIS Playback");
+            var detail = ex.InnerException is null ? string.Empty : $"\n\nService detail: {ex.InnerException.Message}";
+            MessageBox.Show($"Could not capture version changes: {ex.Message}{detail}\n\nNo playback package was saved.", "ArcGIS Playback");
         }
     }
 }
