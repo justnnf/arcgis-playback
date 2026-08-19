@@ -25,14 +25,19 @@ internal sealed class PlaybackPreviewOverlay
             var mapView = MapView.Active ?? throw new InvalidOperationException("Open and activate a map before previewing playback.");
             var targetSpatialReference = mapView.Map.SpatialReference;
             var recordedSpatialReference = RecordedSpatialReference(package) ?? targetSpatialReference;
-            var graphics = package.Operations
+            var createdFeatures = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            var graphics = package.Operations.OrderBy(operation => operation.Sequence)
                 .Where(operation => operation.Type is ChangeOperationType.AddFeature or ChangeOperationType.UpdateFeature or ChangeOperationType.DeleteFeature)
                 .Select(operation =>
                 {
+                    var isNewFeature = operation.Type == ChangeOperationType.AddFeature ||
+                        operation.Type == ChangeOperationType.UpdateFeature && createdFeatures.Contains(FeatureIdentity(operation));
                     var geometry = GeometryFromOperation(operation, recordedSpatialReference);
                     if (geometry is not null && geometry.SpatialReference is not null && !geometry.SpatialReference.IsEqual(targetSpatialReference))
                         geometry = GeometryEngine.Instance.Project(geometry, targetSpatialReference);
-                    return geometry is null ? null : new PreviewGraphic(geometry, SymbolFor(operation.Type, geometry).MakeSymbolReference());
+                    if (operation.Type == ChangeOperationType.AddFeature) createdFeatures.Add(FeatureIdentity(operation));
+                    var previewType = isNewFeature ? ChangeOperationType.AddFeature : operation.Type;
+                    return geometry is null ? null : new PreviewGraphic(geometry, SymbolFor(previewType, geometry).MakeSymbolReference());
                 })
                 .Where(graphic => graphic is not null)
                 .Cast<PreviewGraphic>()
@@ -54,7 +59,7 @@ internal sealed class PlaybackPreviewOverlay
                 BorderThickness = new Thickness(1),
                 CornerRadius = new CornerRadius(4),
                 Padding = new Thickness(9, 5, 9, 5),
-                Child = new TextBlock { Text = $"PREVIEW ACTIVE  •  {preview.Count} feature geometries\nGold new  •  Blue existing edits  •  Red deletes", Foreground = Brushes.White, FontWeight = FontWeights.SemiBold }
+                Child = new TextBlock { Text = $"PREVIEW ACTIVE  •  {preview.Count} feature geometries\nGold new (including later edits)  •  Blue existing edits  •  Red deletes", Foreground = Brushes.White, FontWeight = FontWeights.SemiBold }
             }, true, true, true, OverlayControlRelativePosition.TopLeft, .02, .08);
             preview.MapView.AddOverlayControl(_label);
         });
@@ -96,6 +101,13 @@ internal sealed class PlaybackPreviewOverlay
         if (string.IsNullOrWhiteSpace(package.Metadata.RecordedMapExtentJson)) return null;
         try { return EnvelopeBuilderEx.FromJson(package.Metadata.RecordedMapExtentJson).SpatialReference; }
         catch { return null; }
+    }
+
+    private static string FeatureIdentity(ChangeOperation operation)
+    {
+        if (!string.IsNullOrWhiteSpace(operation.SourceGlobalId)) return $"global:{operation.SourceGlobalId}";
+        if (!string.IsNullOrWhiteSpace(operation.PackageFeatureId)) return $"package:{operation.PackageFeatureId}";
+        return $"row:{operation.LayerName}|{operation.SourceObjectId}";
     }
 
     private static CIMSymbol SymbolFor(ChangeOperationType type, ArcGIS.Core.Geometry.Geometry geometry)
