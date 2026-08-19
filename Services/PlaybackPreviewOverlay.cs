@@ -23,11 +23,15 @@ internal sealed class PlaybackPreviewOverlay
         var preview = await QueuedTask.Run(() =>
         {
             var mapView = MapView.Active ?? throw new InvalidOperationException("Open and activate a map before previewing playback.");
+            var targetSpatialReference = mapView.Map.SpatialReference;
+            var recordedSpatialReference = RecordedSpatialReference(package) ?? targetSpatialReference;
             var graphics = package.Operations
                 .Where(operation => operation.Type is ChangeOperationType.AddFeature or ChangeOperationType.UpdateFeature or ChangeOperationType.DeleteFeature)
                 .Select(operation =>
                 {
-                    var geometry = GeometryFromOperation(operation);
+                    var geometry = GeometryFromOperation(operation, recordedSpatialReference);
+                    if (geometry is not null && geometry.SpatialReference is not null && !geometry.SpatialReference.IsEqual(targetSpatialReference))
+                        geometry = GeometryEngine.Instance.Project(geometry, targetSpatialReference);
                     return geometry is null ? null : new PreviewGraphic(geometry, SymbolFor(operation.Type, geometry).MakeSymbolReference());
                 })
                 .Where(graphic => graphic is not null)
@@ -69,17 +73,27 @@ internal sealed class PlaybackPreviewOverlay
         });
     }
 
-    private static ArcGIS.Core.Geometry.Geometry? GeometryFromOperation(ChangeOperation operation)
+    private static ArcGIS.Core.Geometry.Geometry? GeometryFromOperation(ChangeOperation operation, SpatialReference? fallbackSpatialReference)
     {
         var attributes = operation.After ?? operation.Before;
         if (attributes is null) return null;
         var geometry = attributes.Select(pair => pair.Value).OfType<JsonObject>()
             .FirstOrDefault(value => value["x"] is not null || value["paths"] is not null || value["rings"] is not null);
         if (geometry is null) return null;
-        var json = geometry.ToJsonString();
+        var copy = geometry.DeepClone().AsObject();
+        if (copy["spatialReference"] is null && fallbackSpatialReference is not null)
+            copy["spatialReference"] = JsonNode.Parse(fallbackSpatialReference.ToJson());
+        var json = copy.ToJsonString();
         return geometry["x"] is not null ? MapPointBuilderEx.FromJson(json)
             : geometry["paths"] is not null ? PolylineBuilderEx.FromJson(json)
             : PolygonBuilderEx.FromJson(json);
+    }
+
+    private static SpatialReference? RecordedSpatialReference(ChangePackage package)
+    {
+        if (string.IsNullOrWhiteSpace(package.Metadata.RecordedMapExtentJson)) return null;
+        try { return EnvelopeBuilderEx.FromJson(package.Metadata.RecordedMapExtentJson).SpatialReference; }
+        catch { return null; }
     }
 
     private static CIMSymbol SymbolFor(ChangeOperationType type, ArcGIS.Core.Geometry.Geometry geometry)
