@@ -532,11 +532,7 @@ internal sealed class VersionDifferenceCapture
         if (networkSources.Count == 0)
             throw new InvalidOperationException("The active Utility Network did not expose source IDs needed to capture association changes.");
 
-        var utilityNetworkLayerId = serviceInfo["utilityNetworkLayerId"]?.GetValue<int?>()
-            ?? throw new InvalidOperationException("The feature service did not expose its Utility Network layer ID, so association changes cannot be captured safely.");
-        var utilityNetworkInfo = GetJson(client, $"{featureServiceUrl.TrimEnd('/')}/{utilityNetworkLayerId}?f=json");
-        var associationsTableId = utilityNetworkInfo["systemLayers"]?["associationsTableId"]?.GetValue<int?>()
-            ?? throw new InvalidOperationException("The Utility Network did not expose an associations system table, so association changes cannot be captured safely.");
+        var associationsTableId = FindAssociationsTableId(client, featureServiceUrl, serviceInfo);
 
         var current = QueryAssociationTable(client, featureServiceUrl, associationsTableId, sourceVersion);
         var baseline = QueryAssociationTable(client, featureServiceUrl, associationsTableId, defaultVersionName);
@@ -552,6 +548,42 @@ internal sealed class VersionDifferenceCapture
             operations.Add(new ChangeOperation { Type = ChangeOperationType.DeleteAssociation, Association = ToAssociationReference(association, baselineReferences) });
         foreach (var association in added)
             operations.Add(new ChangeOperation { Type = ChangeOperationType.AddAssociation, Association = ToAssociationReference(association, currentReferences) });
+    }
+
+    // Most services publish utilityNetworkLayerId on their FeatureServer root.
+    // Some older or proxied services omit that property, although their controller
+    // layer still publishes systemLayers. Fall back to finding that controller
+    // layer directly instead of discarding the association portion of the capture.
+    private static int FindAssociationsTableId(EsriHttpClient client, string serviceUrl, JsonNode serviceInfo)
+    {
+        var root = serviceUrl.TrimEnd('/');
+        var layerIds = new List<int>();
+        if (serviceInfo["utilityNetworkLayerId"]?.GetValue<int?>() is int publishedId)
+            layerIds.Add(publishedId);
+
+        // UtilityNetworkServer is a useful second source for the controller ID on
+        // services whose FeatureServer root has been filtered by a proxy.
+        var utilityUrl = root.Replace("/FeatureServer", "/UtilityNetworkServer", StringComparison.OrdinalIgnoreCase);
+        var utilityInfo = GetJson(client, $"{utilityUrl}?f=json");
+        if (utilityInfo["utilityNetworkLayerId"]?.GetValue<int?>() is int utilityServerId && !layerIds.Contains(utilityServerId))
+            layerIds.Add(utilityServerId);
+
+        var serviceLayerIds = (serviceInfo["layers"]?.AsArray() ?? [])
+            .Concat(serviceInfo["tables"]?.AsArray() ?? [])
+            .Select(item => item?["id"]?.GetValue<int?>())
+            .Where(id => id.HasValue)
+            .Select(id => id!.Value);
+        foreach (var layerId in serviceLayerIds)
+            if (!layerIds.Contains(layerId)) layerIds.Add(layerId);
+
+        foreach (var layerId in layerIds)
+        {
+            var layerInfo = GetJson(client, $"{root}/{layerId}?f=json");
+            if (layerInfo["systemLayers"]?["associationsTableId"]?.GetValue<int?>() is int associationsTableId)
+                return associationsTableId;
+        }
+
+        throw new InvalidOperationException("The feature service did not expose a Utility Network associations system table, so association changes cannot be captured safely.");
     }
 
     private static Dictionary<string, ServiceAssociation> QueryAssociationTable(EsriHttpClient client, string serviceUrl, int tableId, string version)
