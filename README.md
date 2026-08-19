@@ -15,7 +15,7 @@ The build copies the package to `release\ArcGISPlayback.ArcPro.3.3.v<version>.es
 
 ## Workflow
 
-1. In the source/pre-production map, choose **Start Recording** and enter attribution, description, work order, file name, and destination.
+1. In the source/pre-production map, choose **Start Recording** and enter the ArcFM session name, package attribution, description, file name, and destination. The active branch version is prefilled and can be corrected if required.
 2. Edit normally with ArcGIS Pro tools or Pro SDK add-ins. A **RECORDING** indicator confirms capture is active.
 3. Choose **Save Recording** to stop capture and write the package.
 4. In the target production map/version, choose **Playback Recording**, select the package, and start playback.

@@ -21,7 +21,8 @@ public sealed class PackageMetadata
     public string Name { get; init; } = string.Empty;
     public string SourceEnvironment { get; init; } = "Pre-production";
     public string SourceBranchVersion { get; init; } = "SDE.DEFAULT";
-    public string? WorkOrder { get; init; }
+    // ArcFM Session Manager session used to correlate this package with its edit session.
+    public string SessionName { get; init; } = string.Empty;
     public string? Description { get; init; }
     public string RecordedBy { get; init; } = Environment.UserName;
 }

@@ -10,16 +10,17 @@ namespace NetworkChangePlaybackAddin.Dialogs;
 internal sealed class StartRecordingWindow : Window
 {
     private readonly TextBox _name = new() { MinWidth = 280 };
-    private readonly TextBox _workOrder = new() { MinWidth = 280 };
-    private readonly TextBox _sourceVersion = new() { Text = "SDE.DEFAULT", MinWidth = 280 };
+    private readonly TextBox _sessionName = new() { MinWidth = 280 };
+    private readonly TextBox _sourceVersion;
     private readonly TextBox _filePath = new() { MinWidth = 220 };
     private readonly TextBox _description = new() { MinWidth = 280, MinHeight = 70, AcceptsReturn = true, TextWrapping = TextWrapping.Wrap };
 
     internal PackageMetadata? Metadata { get; private set; }
     internal string? FilePath { get; private set; }
 
-    internal StartRecordingWindow()
+    internal StartRecordingWindow(string sourceVersion)
     {
+        _sourceVersion = new TextBox { Text = string.IsNullOrWhiteSpace(sourceVersion) ? "SDE.DEFAULT" : sourceVersion, MinWidth = 280 };
         Title = "Start Change Recording";
         Width = 460;
         Height = 610;
@@ -37,7 +38,7 @@ internal sealed class StartRecordingWindow : Window
         panel.Children.Add(DialogAppearance.SectionTitle("Record a pre-production work package"));
         panel.Children.Add(new TextBlock { Text = "Enter the package attribution before starting the active-map recording.", Foreground = DialogAppearance.Foreground, Opacity = .72, Margin = new Thickness(0, 4, 0, 18) });
         AddField(panel, "Package name *", _name);
-        AddField(panel, "Work order / reference", _workOrder);
+        AddField(panel, "ArcFM session name *", _sessionName);
         AddField(panel, "Source branch version *", _sourceVersion);
         panel.Children.Add(new TextBlock { Text = "Save location and filename *", Margin = new Thickness(0, 0, 0, 4) });
         var fileRow = new Grid { Margin = new Thickness(0, 0, 0, 10) };
@@ -78,9 +79,9 @@ internal sealed class StartRecordingWindow : Window
 
     private void Start()
     {
-        if (string.IsNullOrWhiteSpace(_name.Text) || string.IsNullOrWhiteSpace(_sourceVersion.Text) || string.IsNullOrWhiteSpace(_filePath.Text))
+        if (string.IsNullOrWhiteSpace(_name.Text) || string.IsNullOrWhiteSpace(_sessionName.Text) || string.IsNullOrWhiteSpace(_sourceVersion.Text) || string.IsNullOrWhiteSpace(_filePath.Text))
         {
-            MessageBox.Show(this, "Package name, source branch version, and save location are required.", Title, MessageBoxButton.OK, MessageBoxImage.Warning);
+            MessageBox.Show(this, "Package name, ArcFM session name, source branch version, and save location are required.", Title, MessageBoxButton.OK, MessageBoxImage.Warning);
             return;
         }
 
@@ -88,7 +89,7 @@ internal sealed class StartRecordingWindow : Window
         {
             Name = _name.Text.Trim(),
             SourceBranchVersion = _sourceVersion.Text.Trim(),
-            WorkOrder = EmptyToNull(_workOrder.Text),
+            SessionName = _sessionName.Text.Trim(),
             Description = EmptyToNull(_description.Text)
         };
         FilePath = _filePath.Text.Trim();

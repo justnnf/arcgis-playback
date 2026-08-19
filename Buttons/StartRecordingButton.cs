@@ -1,5 +1,8 @@
+using ArcGIS.Core.Data;
 using ArcGIS.Desktop.Framework.Contracts;
 using ArcGIS.Desktop.Framework.Dialogs;
+using ArcGIS.Desktop.Framework.Threading.Tasks;
+using ArcGIS.Desktop.Mapping;
 using NetworkChangePlaybackAddin.Dialogs;
 using NetworkChangePlaybackAddin.Services;
 
@@ -17,7 +20,8 @@ internal sealed class StartRecordingButton : Button
             return;
         }
 
-        var window = new StartRecordingWindow { Owner = System.Windows.Application.Current?.MainWindow };
+        var sourceVersion = await QueuedTask.Run(GetActiveBranchVersion);
+        var window = new StartRecordingWindow(sourceVersion) { Owner = System.Windows.Application.Current?.MainWindow };
         if (window.ShowDialog() != true || window.Metadata is null || window.FilePath is null) return;
 
         try
@@ -32,5 +36,17 @@ internal sealed class StartRecordingButton : Button
             await RecorderHost.Capture.StopAsync();
             MessageBox.Show($"Recording did not start: {ex.Message}", "ArcGIS Playback");
         }
+    }
+
+    private static string GetActiveBranchVersion()
+    {
+        var sourceLayer = MapView.Active?.Map?.GetLayersAsFlattenedList().OfType<FeatureLayer>().FirstOrDefault();
+        if (sourceLayer is null) return "SDE.DEFAULT";
+
+        using var table = sourceLayer.GetTable();
+        if (table?.GetDatastore() is not Geodatabase geodatabase) return "SDE.DEFAULT";
+        using var versionManager = geodatabase.GetVersionManager();
+        using var version = versionManager.GetCurrentVersion();
+        return version.GetName();
     }
 }

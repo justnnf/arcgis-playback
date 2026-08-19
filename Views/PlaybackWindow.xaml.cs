@@ -61,7 +61,7 @@ public partial class PlaybackWindow : Window
             {
                 Name = PackageNameBox.Text.Trim(),
                 SourceBranchVersion = string.IsNullOrWhiteSpace(SourceVersionBox.Text) ? "SDE.DEFAULT" : SourceVersionBox.Text.Trim(),
-                WorkOrder = NullWhenBlank(WorkOrderBox.Text),
+                SessionName = NullWhenBlank(WorkOrderBox.Text) ?? string.Empty,
                 Description = NullWhenBlank(DescriptionBox.Text)
             }, dialog.FileName);
             RecordedOperations.Clear();
