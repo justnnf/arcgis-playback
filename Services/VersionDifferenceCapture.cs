@@ -38,7 +38,8 @@ internal sealed class VersionDifferenceCapture
 
     private CaptureResult CaptureCore(Map map, PackageMetadata requestedMetadata)
     {
-        var members = MapMembers(map).ToList();
+        var skipped = new List<string>();
+        var members = UtilityNetworkMembers(map, skipped);
         if (members.Count == 0) throw new InvalidOperationException("The active map has no feature layers or standalone tables to capture.");
 
         using var firstTable = GetTable(members[0]);
@@ -58,7 +59,6 @@ internal sealed class VersionDifferenceCapture
 
         var operations = new List<ChangeOperation>();
         var capturedSources = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        var skipped = new List<string>();
 
         if (versionManager.GetVersioningType() == VersionType.Branch)
         {
@@ -120,6 +120,42 @@ internal sealed class VersionDifferenceCapture
     private static IEnumerable<MapMember> MapMembers(Map map) => map.GetLayersAsFlattenedList()
         .OfType<FeatureLayer>().Cast<MapMember>()
         .Concat(map.GetStandaloneTablesAsFlattenedList().Cast<MapMember>());
+
+    // A version capture is intentionally limited to actual Utility Network source
+    // tables. Dirty areas, error layers, traces, and unrelated operational tables
+    // can be present in the same map/service but must never become playback edits.
+    private static List<MapMember> UtilityNetworkMembers(Map map, List<string> skipped)
+    {
+        var networkLayer = map.GetLayersAsFlattenedList().OfType<UtilityNetworkLayer>().FirstOrDefault()
+            ?? throw new InvalidOperationException("Capture Version Changes requires an active Utility Network layer in the map.");
+        var names = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        using (var utilityNetwork = networkLayer.GetUtilityNetwork())
+        using (var definition = utilityNetwork.GetDefinition())
+        {
+            foreach (var source in definition.GetNetworkSources())
+            {
+                names.Add(source.Name);
+                using var table = utilityNetwork.GetTable(source);
+                names.Add(table.GetName());
+            }
+        }
+
+        var eligible = new List<MapMember>();
+        foreach (var member in MapMembers(map))
+        {
+            try
+            {
+                using var table = GetTable(member);
+                if (names.Contains(table.GetName())) eligible.Add(member);
+                else skipped.Add($"{member.Name}: excluded because it is not a Utility Network source (for example, dirty areas and error layers are never captured).");
+            }
+            catch (InvalidOperationException ex)
+            {
+                skipped.Add($"{member.Name}: excluded because its table is unavailable ({ex.Message}).");
+            }
+        }
+        return eligible;
+    }
 
     private static Table GetTable(MapMember member) => member switch
     {
