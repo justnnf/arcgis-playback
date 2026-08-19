@@ -5,6 +5,7 @@ using System.IO;
 using ArcGIS.Core.Data;
 using ArcGIS.Core.Data.Exceptions;
 using ArcGIS.Desktop.Core;
+using ArcGIS.Desktop.Core.Portal;
 using ArcGIS.Desktop.Mapping;
 using NetworkChangePlaybackAddin.Models;
 
@@ -17,8 +18,10 @@ namespace NetworkChangePlaybackAddin.Services;
 internal sealed class VersionDifferenceCapture
 {
     private const int QueryBatchSize = 200;
+    private static readonly AsyncLocal<string?> ServiceToken = new();
     internal CaptureResult Capture(Map map, PackageMetadata requestedMetadata)
     {
+        var previousToken = ServiceToken.Value;
         try
         {
             return CaptureCore(map, requestedMetadata);
@@ -26,6 +29,10 @@ internal sealed class VersionDifferenceCapture
         catch (NullReferenceException ex)
         {
             throw new InvalidOperationException("ArcGIS returned an incomplete layer or version object while reading the active map. Reconnect the map's versioned service and try again; no package was saved.", ex);
+        }
+        finally
+        {
+            ServiceToken.Value = previousToken;
         }
     }
 
@@ -177,7 +184,7 @@ internal sealed class VersionDifferenceCapture
         if (serviceMembers.Any(item => !string.Equals(item.ServiceUrl, serviceUrl, StringComparison.OrdinalIgnoreCase)))
             throw new InvalidOperationException("Capture Version Changes currently requires all captured layers to use one feature service.");
 
-        var client = new EsriHttpClient { ShowDialogs = true };
+        var client = AuthenticatedServiceClient();
         var versionServiceUrl = serviceUrl.Replace("/FeatureServer", "/VersionManagementServer", StringComparison.OrdinalIgnoreCase).TrimEnd('/');
         var versionServiceInfo = GetJson(client, $"{versionServiceUrl}?f=json");
         var authoritativeDefaultVersion = versionServiceInfo["defaultVersionName"]?.ToString();
@@ -248,21 +255,44 @@ internal sealed class VersionDifferenceCapture
 
     private static JsonNode GetJson(EsriHttpClient client, string url)
     {
-        var response = client.Get(url).EnsureSuccessStatusCode();
+        var response = client.Get(WithToken(url)).EnsureSuccessStatusCode();
         var document = JsonNode.Parse(response.Content.ReadAsStringAsync().GetAwaiter().GetResult())
             ?? throw new InvalidDataException("The feature service returned an empty response.");
         EnsureNoServiceError(document, "reading the Version Management service");
         return document;
     }
 
+    private static EsriHttpClient AuthenticatedServiceClient()
+    {
+        // EsriHttpClient normally appends portal credentials automatically. Version
+        // Management Server can sit behind a different service endpoint, however,
+        // and then needs the active Portal token supplied explicitly.
+        var portal = ArcGISPortalManager.Current.GetActivePortal()
+            ?? throw new InvalidOperationException("Sign in to the Portal that hosts this versioned service before capturing changes.");
+        var token = portal.GetToken();
+        if (string.IsNullOrWhiteSpace(token))
+            throw new InvalidOperationException("Sign in to the Portal that hosts this versioned service before capturing changes.");
+        ServiceToken.Value = token;
+        return new EsriHttpClient { ShowDialogs = true };
+    }
+
     private static JsonNode PostJson(EsriHttpClient client, string url, string body)
     {
+        var token = ServiceToken.Value;
+        if (!string.IsNullOrWhiteSpace(token)) body += $"&token={Uri.EscapeDataString(token)}";
         using var content = new StringContent(body, System.Text.Encoding.UTF8, "application/x-www-form-urlencoded");
         var response = client.Post(url, content).EnsureSuccessStatusCode();
         var document = JsonNode.Parse(response.Content.ReadAsStringAsync().GetAwaiter().GetResult())
             ?? throw new InvalidDataException("The Version Management service returned an empty response.");
         EnsureNoServiceError(document, "requesting version differences");
         return document;
+    }
+
+    private static string WithToken(string url)
+    {
+        var token = ServiceToken.Value;
+        if (string.IsNullOrWhiteSpace(token)) return url;
+        return $"{url}{(url.Contains('?') ? "&" : "?")}token={Uri.EscapeDataString(token)}";
     }
 
     private static void EnsureNoServiceError(JsonNode document, string stage)
