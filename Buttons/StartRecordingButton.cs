@@ -20,8 +20,8 @@ internal sealed class StartRecordingButton : Button
             return;
         }
 
-        var sourceVersion = await QueuedTask.Run(GetActiveBranchVersion);
-        var window = new StartRecordingWindow(sourceVersion) { Owner = System.Windows.Application.Current?.MainWindow };
+        var recordingContext = await QueuedTask.Run(GetRecordingContext);
+        var window = new StartRecordingWindow(recordingContext.SourceVersion, recordingContext.ExtentJson) { Owner = System.Windows.Application.Current?.MainWindow };
         if (window.ShowDialog() != true || window.Metadata is null || window.FilePath is null) return;
 
         try
@@ -38,15 +38,18 @@ internal sealed class StartRecordingButton : Button
         }
     }
 
-    private static string GetActiveBranchVersion()
+    private static RecordingContext GetRecordingContext()
     {
+        var extentJson = MapView.Active?.Extent?.ToJson();
         var sourceLayer = MapView.Active?.Map?.GetLayersAsFlattenedList().OfType<FeatureLayer>().FirstOrDefault();
-        if (sourceLayer is null) return "SDE.DEFAULT";
+        if (sourceLayer is null) return new RecordingContext("SDE.DEFAULT", extentJson);
 
         using var table = sourceLayer.GetTable();
-        if (table?.GetDatastore() is not Geodatabase geodatabase) return "SDE.DEFAULT";
+        if (table?.GetDatastore() is not Geodatabase geodatabase) return new RecordingContext("SDE.DEFAULT", extentJson);
         using var versionManager = geodatabase.GetVersionManager();
         using var version = versionManager.GetCurrentVersion();
-        return version.GetName();
+        return new RecordingContext(version.GetName(), extentJson);
     }
+
+    private sealed record RecordingContext(string SourceVersion, string? ExtentJson);
 }

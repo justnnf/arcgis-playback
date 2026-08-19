@@ -31,6 +31,20 @@ internal sealed class PlaybackService
         });
     }
 
+    internal async Task ZoomToRecordedExtentAsync(ChangePackage package)
+    {
+        if (string.IsNullOrWhiteSpace(package.Metadata.RecordedMapExtentJson) || MapView.Active is null) return;
+        try
+        {
+            var extent = EnvelopeBuilderEx.FromJson(package.Metadata.RecordedMapExtentJson);
+            await MapView.Active.ZoomToAsync(extent);
+        }
+        catch
+        {
+            // A target map may use an incompatible spatial reference. Playback remains valid.
+        }
+    }
+
     internal async Task<PlaybackResult> ContinueAsync(PlaybackContinuation continuation)
     {
         return await QueuedTask.Run(() =>
@@ -67,8 +81,8 @@ internal sealed class PlaybackService
             {
                 try
                 {
-                    ApplyAssociation(package, operation, map, _createdRows);
-                    result.Queued++;
+                    if (ApplyAssociation(package, operation, map, _createdRows)) result.Queued++;
+                    else result.AlreadySatisfied++;
                 }
                 catch (Exception ex)
                 {
@@ -153,23 +167,31 @@ internal sealed class PlaybackService
 
     private sealed record TargetRow(MapMember Member, long ObjectId);
 
-    private static void ApplyAssociation(ChangePackage package, ChangeOperation operation, Map map, IReadOnlyDictionary<string, TargetRow> createdRows)
+    // Returns false when the target already has the requested final state. This makes
+    // packages safe when a template or a prior playback operation has already created it.
+    private static bool ApplyAssociation(ChangePackage package, ChangeOperation operation, Map map, IReadOnlyDictionary<string, TargetRow> createdRows)
     {
         var association = operation.Association ?? throw new InvalidOperationException("The package operation has no association payload.");
         if (!Enum.TryParse<AssociationType>(association.AssociationType, true, out var type))
             throw new InvalidOperationException($"Unsupported association type '{association.AssociationType}'.");
-        var from = ResolveAssociationEndpoint(map, association.From, createdRows)
-            ?? throw new InvalidOperationException("The from endpoint could not be resolved by package ID or FacilityID.");
-        var to = ResolveAssociationEndpoint(map, association.To, createdRows)
-            ?? throw new InvalidOperationException("The to endpoint could not be resolved by package ID or FacilityID.");
+        var from = ResolveAssociationEndpoint(map, association.From, createdRows);
+        var to = ResolveAssociationEndpoint(map, association.To, createdRows);
+        from ??= ResolveAssociationEndpoint(map, association.From, createdRows, to);
+        to ??= ResolveAssociationEndpoint(map, association.To, createdRows, from);
+        if (from is null) throw new InvalidOperationException("The from endpoint could not be resolved by package ID, FacilityID, association anchor, or a unique spatial match.");
+        if (to is null) throw new InvalidOperationException("The to endpoint could not be resolved by package ID, FacilityID, association anchor, or a unique spatial match.");
         var description = AssociationDescription(type, new RowHandle(from.Member, from.ObjectId), new RowHandle(to.Member, to.ObjectId), association);
+        var exists = AssociationExists(map, type, from, to, association);
+        if (operation.Type == ChangeOperationType.AddAssociation && exists) return false;
+        if (operation.Type == ChangeOperationType.DeleteAssociation && !exists) return false;
         var edit = NewEdit(package, operation);
         if (operation.Type == ChangeOperationType.AddAssociation) edit.Create(description);
         else edit.Delete(description);
         Execute(edit);
+        return true;
     }
 
-    private static TargetRow? ResolveAssociationEndpoint(Map map, FeatureReference reference, IReadOnlyDictionary<string, TargetRow> createdRows)
+    private static TargetRow? ResolveAssociationEndpoint(Map map, FeatureReference reference, IReadOnlyDictionary<string, TargetRow> createdRows, TargetRow? related = null)
     {
         if (!string.IsNullOrWhiteSpace(reference.PackageFeatureId) && createdRows.TryGetValue(reference.PackageFeatureId, out var created)) return created;
         var attributes = new JsonObject();
@@ -177,8 +199,93 @@ internal sealed class PlaybackService
         if (reference.AssetType is int assetType) attributes["ASSETTYPE"] = assetType;
         var operation = new ChangeOperation { LayerName = reference.LayerName, FacilityId = reference.FacilityId, After = attributes };
         var member = ResolveTargetMember(map, operation, out _);
-        return member is null || string.IsNullOrWhiteSpace(reference.FacilityId) ? null : FindObjectIdByFacilityId(member, reference.FacilityId) is long objectId
-            ? new TargetRow(member, objectId) : null;
+        if (member is null) return null;
+        if (!string.IsNullOrWhiteSpace(reference.FacilityId) && FindObjectIdByFacilityId(member, reference.FacilityId) is long objectId)
+            return new TargetRow(member, objectId);
+        if (related is not null && FindAssociationAnchoredTarget(map, member, reference, related) is long anchoredObjectId)
+            return new TargetRow(member, anchoredObjectId);
+        return FindObjectIdByLocation(member, reference) is long spatialObjectId ? new TargetRow(member, spatialObjectId) : null;
+    }
+
+    private static long? FindObjectIdByLocation(MapMember member, FeatureReference reference)
+    {
+        if (member is not FeatureLayer layer || string.IsNullOrWhiteSpace(reference.LocationJson)) return null;
+        Geometry geometry;
+        try { geometry = GeometryFromJson(reference.LocationJson, layer.ShapeType); }
+        catch { return null; }
+        using var table = layer.GetTable();
+        using var definition = table.GetDefinition();
+        var fields = definition.GetFields().ToDictionary(field => field.Name, StringComparer.OrdinalIgnoreCase);
+        using var cursor = table.Search(new SpatialQueryFilter { FilterGeometry = geometry, SpatialRelationship = SpatialRelationship.Intersects }, false);
+        long? match = null;
+        while (cursor.MoveNext())
+        {
+            using var row = cursor.Current;
+            if (!MatchesAssetSubtype(row, fields, reference)) continue;
+            if (match is not null) return null;
+            match = row.GetObjectID();
+        }
+        return match;
+    }
+
+    private static long? FindAssociationAnchoredTarget(Map map, MapMember member, FeatureReference reference, TargetRow related)
+    {
+        var networkLayer = map.GetLayersAsFlattenedList().OfType<UtilityNetworkLayer>().FirstOrDefault();
+        if (networkLayer is null) return null;
+        using var utilityNetwork = networkLayer.GetUtilityNetwork();
+        var relatedElement = GetElement(utilityNetwork, related);
+        if (relatedElement is null) return null;
+        long? match = null;
+        foreach (var association in utilityNetwork.GetAssociations(relatedElement))
+        {
+            var candidate = association.FromElement.GlobalID == relatedElement.GlobalID ? association.ToElement : association.FromElement;
+            if (!IsSourceTable(member, candidate.NetworkSource.Name)) continue;
+            if (reference.AssetGroup is int group && candidate.AssetGroup.Code != group) continue;
+            if (reference.AssetType is int type && candidate.AssetType.Code != type) continue;
+            if (match is not null) return null;
+            match = candidate.ObjectID;
+        }
+        return match;
+    }
+
+    private static bool AssociationExists(Map map, AssociationType type, TargetRow from, TargetRow to, AssociationReference reference)
+    {
+        var networkLayer = map.GetLayersAsFlattenedList().OfType<UtilityNetworkLayer>().FirstOrDefault();
+        if (networkLayer is null) return false;
+        using var utilityNetwork = networkLayer.GetUtilityNetwork();
+        var fromElement = GetElement(utilityNetwork, from);
+        var toElement = GetElement(utilityNetwork, to);
+        if (fromElement is null || toElement is null) return false;
+        return utilityNetwork.GetAssociations(fromElement).Any(existing =>
+            existing.Type == type && SameAssociationEndpoints(existing, fromElement, toElement, reference));
+    }
+
+    private static bool SameAssociationEndpoints(Association existing, Element from, Element to, AssociationReference reference)
+    {
+        var direct = existing.FromElement.GlobalID == from.GlobalID && existing.ToElement.GlobalID == to.GlobalID;
+        var reversed = existing.FromElement.GlobalID == to.GlobalID && existing.ToElement.GlobalID == from.GlobalID;
+        if (!direct && !reversed) return false;
+        var expectedFromTerminal = direct ? reference.FromTerminalId : reference.ToTerminalId;
+        var expectedToTerminal = direct ? reference.ToTerminalId : reference.FromTerminalId;
+        if (existing.FromElement.Terminal?.ID != expectedFromTerminal || existing.ToElement.Terminal?.ID != expectedToTerminal) return false;
+        if (existing.Type == AssociationType.Containment && existing.IsContainmentVisible != (reference.IsContentVisible ?? false)) return false;
+        return existing.Type != AssociationType.JunctionEdgeObjectConnectivityMidspan || Math.Abs(existing.PercentAlong - (reference.PercentAlong ?? 0)) < .000001;
+    }
+
+    private static Element? GetElement(UtilityNetwork utilityNetwork, TargetRow target)
+    {
+        using var table = GetTable(target.Member);
+        using var cursor = table.Search(new QueryFilter { ObjectIDs = [target.ObjectId] }, false);
+        if (!cursor.MoveNext()) return null;
+        using var row = cursor.Current;
+        return utilityNetwork.CreateElement(row);
+    }
+
+    private static bool MatchesAssetSubtype(Row row, IReadOnlyDictionary<string, Field> fields, FeatureReference reference)
+    {
+        if (reference.AssetGroup is int group && (!fields.TryGetValue("ASSETGROUP", out var groupField) || Convert.ToInt32(row[groupField.Name], CultureInfo.InvariantCulture) != group)) return false;
+        if (reference.AssetType is int type && (!fields.TryGetValue("ASSETTYPE", out var typeField) || Convert.ToInt32(row[typeField.Name], CultureInfo.InvariantCulture) != type)) return false;
+        return true;
     }
 
     private static AssociationDescription AssociationDescription(AssociationType type, RowHandle from, RowHandle to, AssociationReference association)
@@ -363,6 +470,7 @@ internal sealed class PlaybackService
 internal sealed class PlaybackResult
 {
     internal int Queued { get; set; }
+    internal int AlreadySatisfied { get; set; }
     internal List<string> Skipped { get; } = [];
     internal bool Completed { get; set; }
     internal bool Stopped { get; set; }

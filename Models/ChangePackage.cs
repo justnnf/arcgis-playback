@@ -21,6 +21,7 @@ public sealed class PackageMetadata
     public string Name { get; init; } = string.Empty;
     public string SourceEnvironment { get; init; } = "Pre-production";
     public string SourceBranchVersion { get; init; } = "SDE.DEFAULT";
+    public string? RecordedMapExtentJson { get; init; }
     // ArcFM Session Manager session used to correlate this package with its edit session.
     public string SessionName { get; init; } = string.Empty;
     public string? Description { get; init; }
@@ -67,4 +68,6 @@ public sealed class FeatureReference
     public string? PackageFeatureId { get; init; }
     public int? AssetGroup { get; init; }
     public int? AssetType { get; init; }
+    public string? LocationJson { get; init; }
+    public string? RelatedFacilityId { get; init; }
 }

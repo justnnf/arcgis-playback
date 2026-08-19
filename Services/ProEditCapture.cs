@@ -211,17 +211,22 @@ internal sealed class ProEditCapture
         foreach (var pair in current) _associationSnapshot[pair.Key] = pair.Value;
     }
 
-    private AssociationReference ToAssociationReference(UtilityNetwork utilityNetwork, Association association) => new()
+    private AssociationReference ToAssociationReference(UtilityNetwork utilityNetwork, Association association)
     {
-        SourceAssociationGlobalId = association.GlobalID.ToString(),
-        AssociationType = association.Type.ToString(),
-        From = ToFeatureReference(utilityNetwork, association.FromElement),
-        To = ToFeatureReference(utilityNetwork, association.ToElement),
-        FromTerminalId = association.FromElement.Terminal?.ID,
-        ToTerminalId = association.ToElement.Terminal?.ID,
-        IsContentVisible = association.Type == AssociationType.Containment ? association.IsContainmentVisible : null,
-        PercentAlong = association.PercentAlong
-    };
+        var from = ToFeatureReference(utilityNetwork, association.FromElement);
+        var to = ToFeatureReference(utilityNetwork, association.ToElement);
+        return new AssociationReference
+        {
+            SourceAssociationGlobalId = association.GlobalID.ToString(),
+            AssociationType = association.Type.ToString(),
+            From = WithRelatedFacility(from, to.FacilityId),
+            To = WithRelatedFacility(to, from.FacilityId),
+            FromTerminalId = association.FromElement.Terminal?.ID,
+            ToTerminalId = association.ToElement.Terminal?.ID,
+            IsContentVisible = association.Type == AssociationType.Containment ? association.IsContainmentVisible : null,
+            PercentAlong = association.PercentAlong
+        };
+    }
 
     private FeatureReference ToFeatureReference(UtilityNetwork utilityNetwork, Element element)
     {
@@ -240,9 +245,22 @@ internal sealed class ProEditCapture
             FacilityId = FieldValue(row, fields, "FACILITYID"),
             PackageFeatureId = _packageFeatureIds.GetValueOrDefault(rowKey),
             AssetGroup = IntFieldValue(row, fields, "ASSETGROUP"),
-            AssetType = IntFieldValue(row, fields, "ASSETTYPE")
+            AssetType = IntFieldValue(row, fields, "ASSETTYPE"),
+            LocationJson = row is Feature feature ? feature.GetShape().ToJson() : null
         };
     }
+
+    private static FeatureReference WithRelatedFacility(FeatureReference reference, string? relatedFacilityId) => new()
+    {
+        LayerName = reference.LayerName,
+        SourceGlobalId = reference.SourceGlobalId,
+        FacilityId = reference.FacilityId,
+        PackageFeatureId = reference.PackageFeatureId,
+        AssetGroup = reference.AssetGroup,
+        AssetType = reference.AssetType,
+        LocationJson = reference.LocationJson,
+        RelatedFacilityId = relatedFacilityId
+    };
 
     // Feature-service maps can prefix a physical table with a portal/service label
     // (for example, "L2"). Packages must instead carry the UN source name, which is

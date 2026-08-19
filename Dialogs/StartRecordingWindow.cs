@@ -18,8 +18,11 @@ internal sealed class StartRecordingWindow : Window
     internal PackageMetadata? Metadata { get; private set; }
     internal string? FilePath { get; private set; }
 
-    internal StartRecordingWindow(string sourceVersion)
+    private readonly string? _recordedMapExtentJson;
+
+    internal StartRecordingWindow(string sourceVersion, string? recordedMapExtentJson)
     {
+        _recordedMapExtentJson = recordedMapExtentJson;
         _sourceVersion = new TextBox { Text = string.IsNullOrWhiteSpace(sourceVersion) ? "SDE.DEFAULT" : sourceVersion, MinWidth = 280 };
         Title = "Start Change Recording";
         Width = 460;
@@ -89,6 +92,7 @@ internal sealed class StartRecordingWindow : Window
         {
             Name = _name.Text.Trim(),
             SourceBranchVersion = _sourceVersion.Text.Trim(),
+            RecordedMapExtentJson = _recordedMapExtentJson,
             SessionName = _sessionName.Text.Trim(),
             Description = EmptyToNull(_description.Text)
         };

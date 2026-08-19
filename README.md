@@ -23,7 +23,7 @@ The build copies the package to `release\ArcGISPlayback.ArcPro.3.3.v<version>.es
 
 ## Identity and target resolution
 
-Production GlobalIDs are deliberately not used as a cross-environment key. Playback resolves rows using the package-local ID for a feature created earlier in the same playback, then `FacilityID` for an existing production feature, narrowed by source/table and subtype when available.
+Production GlobalIDs are deliberately not used as a cross-environment key. Playback resolves rows using the package-local ID for a feature created earlier in the same playback, then `FacilityID` for an existing production feature, narrowed by source/table and subtype when available. For unkeyed spatial junctions, playback can use a unique subtype-matched location or an existing association to an already-resolved endpoint; ambiguous matches pause for review.
 
 For an edit or association involving an existing feature, populate `FacilityID` in the source before recording. A package cannot reliably recreate an association to an existing endpoint that has neither a prior package ID nor a FacilityID.
 
@@ -31,7 +31,7 @@ For an edit or association involving an existing feature, populate `FacilityID` 
 
 The recorder journals feature and object-table creates, updates, deletes, geometry edits, and association changes observed through normal Pro edit events. To protect ArcGIS Pro’s edit pipeline, event callbacks record in memory; packages are saved every 15 seconds and when **Save Recording** is used. Association reads are debounced until editing is idle and serialized so they do not compete with placement tools. Replay supports subtype feature layers and subtype object tables, including association endpoints represented by subtype layers/tables.
 
-Always use a clean target version and validate a representative package before production. Replay is intentionally interactive on unresolved rows and failed operations; it does not silently substitute a GlobalID from pre-production. Attachments, inspection/work-management records, traces, subnetworks, and integration-specific side effects require their own tested capture/replay rules before they are migration-ready.
+The source map extent is recorded with the package and playback zooms the active map to it before edits begin. Always use a clean target version and validate a representative package before production. Replay is intentionally interactive on unresolved rows and failed operations; it does not silently substitute a GlobalID from pre-production. Existing associations are recognized as already satisfied rather than reported as failures. Attachments, inspection/work-management records, traces, subnetworks, and integration-specific side effects require their own tested capture/replay rules before they are migration-ready.
 
 ## Layout
 
