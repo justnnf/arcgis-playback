@@ -135,8 +135,19 @@ internal sealed class VersionDifferenceCapture
             foreach (var source in definition.GetNetworkSources())
             {
                 names.Add(source.Name);
-                using var table = utilityNetwork.GetTable(source);
-                names.Add(table.GetName());
+                // A utility-network definition can include sources not published in
+                // the active map's service. They are not capture candidates, so do
+                // not fail the whole capture merely because their table is absent.
+                try
+                {
+                    using var table = utilityNetwork.GetTable(source);
+                    names.Add(table.GetName());
+                }
+                catch (GeodatabaseException)
+                {
+                    // The source name above is still useful if a matching map member
+                    // is available; otherwise it remains outside the capture scope.
+                }
             }
         }
 
@@ -149,7 +160,7 @@ internal sealed class VersionDifferenceCapture
                 if (names.Contains(table.GetName())) eligible.Add(member);
                 else skipped.Add($"{member.Name}: excluded because it is not a Utility Network source (for example, dirty areas and error layers are never captured).");
             }
-            catch (InvalidOperationException ex)
+            catch (Exception ex) when (ex is InvalidOperationException or GeodatabaseException)
             {
                 skipped.Add($"{member.Name}: excluded because its table is unavailable ({ex.Message}).");
             }
