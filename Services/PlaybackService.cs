@@ -2,6 +2,7 @@ using System.Globalization;
 using System.Text.RegularExpressions;
 using System.Text.Json.Nodes;
 using ArcGIS.Core.Data;
+using ArcGIS.Core.Data.Exceptions;
 using ArcGIS.Core.CIM;
 using ArcGIS.Core.Geometry;
 using ArcGIS.Core.Data.UtilityNetwork;
@@ -300,7 +301,7 @@ internal sealed class PlaybackService
         foreach (var association in utilityNetwork.GetAssociations(relatedElement))
         {
             var candidate = association.FromElement.GlobalID == relatedElement.GlobalID ? association.ToElement : association.FromElement;
-            if (!IsSourceTable(member, candidate.NetworkSource.Name)) continue;
+            if (!IsSourceTable(map, member, candidate.NetworkSource.Name)) continue;
             if (reference.AssetGroup is int group && candidate.AssetGroup.Code != group) continue;
             if (reference.AssetType is int type && candidate.AssetType.Code != type) continue;
             if (match is not null) return null;
@@ -372,12 +373,40 @@ internal sealed class PlaybackService
         return cursor.MoveNext() ? cursor.Current.GetObjectID() : null;
     }
 
-    private static bool IsSourceTable(MapMember mapMember, string? sourceName)
+    private static bool IsSourceTable(Map map, MapMember mapMember, string? sourceName)
     {
         if (string.IsNullOrWhiteSpace(sourceName)) return false;
         if (string.Equals(mapMember.Name, sourceName, StringComparison.OrdinalIgnoreCase)) return true;
         using var table = GetTable(mapMember);
-        return string.Equals(table.GetDefinition().GetName(), sourceName, StringComparison.OrdinalIgnoreCase);
+        var tableName = table.GetDefinition().GetName();
+        if (string.Equals(tableName, sourceName, StringComparison.OrdinalIgnoreCase)) return true;
+        return UtilityNetworkSourceTableNames(map, sourceName).Contains(tableName);
+    }
+
+    // Version-difference packages use the canonical Utility Network source name
+    // (for example, ElectricDevice). A map's subtype children can expose that same
+    // source as a service-prefixed physical table (for example, L0ElectricDevice).
+    private static HashSet<string> UtilityNetworkSourceTableNames(Map map, string sourceName)
+    {
+        var names = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var networkLayer = map.GetLayersAsFlattenedList().OfType<UtilityNetworkLayer>().FirstOrDefault();
+        if (networkLayer is null) return names;
+        try
+        {
+            using var utilityNetwork = networkLayer.GetUtilityNetwork();
+            using var definition = utilityNetwork.GetDefinition();
+            var source = definition.GetNetworkSources()
+                .FirstOrDefault(candidate => string.Equals(candidate.Name, sourceName, StringComparison.OrdinalIgnoreCase));
+            if (source is null) return names;
+            using var sourceTable = utilityNetwork.GetTable(source);
+            names.Add(sourceTable.GetName());
+            names.Add(sourceTable.GetDefinition().GetName());
+        }
+        catch (GeodatabaseException)
+        {
+            // The ordinary map-member identity checks above remain available.
+        }
+        return names;
     }
 
     // A subtype layer is a filtered view of one underlying feature class.  Selecting the
@@ -387,7 +416,7 @@ internal sealed class PlaybackService
     {
         var candidates = map.GetLayersAsFlattenedList().OfType<FeatureLayer>().Cast<MapMember>()
             .Concat(map.GetStandaloneTablesAsFlattenedList().Cast<MapMember>())
-            .Where(member => IsSourceTable(member, operation.LayerName)).ToList();
+            .Where(member => IsSourceTable(map, member, operation.LayerName)).ToList();
         if (candidates.Count == 0)
         {
             issue = $"feature class or object table '{operation.LayerName}' is not represented in the active map.";
