@@ -3,6 +3,7 @@ using System.Text.Json;
 using System.Net.Http;
 using System.IO;
 using ArcGIS.Core.Data;
+using ArcGIS.Core.Data.UtilityNetwork;
 using ArcGIS.Core.Data.Exceptions;
 using ArcGIS.Desktop.Core;
 using ArcGIS.Desktop.Core.Portal;
@@ -554,9 +555,9 @@ internal sealed class VersionDifferenceCapture
         var currentReferences = QueryAssociationReferences(client, featureServiceUrl, sourceVersion, added, networkSources, layerNames, operations);
         var baselineReferences = QueryAssociationReferences(client, featureServiceUrl, defaultVersionName, removed, networkSources, layerNames, operations);
         foreach (var association in removed)
-            operations.Add(new ChangeOperation { Type = ChangeOperationType.DeleteAssociation, Association = ToAssociationReference(association, baselineReferences) });
+            operations.Add(new ChangeOperation { Type = ChangeOperationType.DeleteAssociation, Association = ToAssociationReference(association, baselineReferences, networkSources) });
         foreach (var association in added)
-            operations.Add(new ChangeOperation { Type = ChangeOperationType.AddAssociation, Association = ToAssociationReference(association, currentReferences) });
+            operations.Add(new ChangeOperation { Type = ChangeOperationType.AddAssociation, Association = ToAssociationReference(association, currentReferences, networkSources) });
     }
 
     private static List<NetworkElement> AffectedNetworkElements(IReadOnlyList<ChangeOperation> affected,
@@ -640,10 +641,11 @@ internal sealed class VersionDifferenceCapture
         return references;
     }
 
-    private static AssociationReference ToAssociationReference(ServiceAssociation association, IReadOnlyDictionary<string, FeatureReference> references) => new()
+    private static AssociationReference ToAssociationReference(ServiceAssociation association, IReadOnlyDictionary<string, FeatureReference> references,
+        IReadOnlyDictionary<int, NetworkSourceInfo> sources) => new()
     {
         SourceAssociationGlobalId = association.GlobalId,
-        AssociationType = AssociationTypeName(association.Type),
+        AssociationType = AssociationTypeName(association, sources),
         From = WithRelatedFacility(references[$"{association.FromNetworkSourceId}|{association.FromGlobalId}"], references[$"{association.ToNetworkSourceId}|{association.ToGlobalId}"].FacilityId),
         To = WithRelatedFacility(references[$"{association.ToNetworkSourceId}|{association.ToGlobalId}"], references[$"{association.FromNetworkSourceId}|{association.FromGlobalId}"].FacilityId),
         FromTerminalId = association.FromTerminalId,
@@ -664,16 +666,31 @@ internal sealed class VersionDifferenceCapture
         RelatedFacilityId = relatedFacilityId
     };
 
-    private static string AssociationTypeName(string type) => type.ToLowerInvariant() switch
+    private static string AssociationTypeName(ServiceAssociation association, IReadOnlyDictionary<int, NetworkSourceInfo> sources) => association.Type.ToLowerInvariant() switch
     {
         "attachment" => "Attachment",
         "containment" => "Containment",
         "junctionjunctionconnectivity" => "JunctionJunctionConnectivity",
-        "junctionedgefromconnectivity" => "JunctionEdgeFromConnectivity",
-        "junctionedgetoconnectivity" => "JunctionEdgeToConnectivity",
+        "junctionedgefromconnectivity" => "JunctionEdgeObjectConnectivityFromSide",
+        "junctionedgetoconnectivity" => "JunctionEdgeObjectConnectivityToSide",
         "junctionmidspanconnectivity" => "JunctionEdgeObjectConnectivityMidspan",
-        _ => throw new InvalidOperationException($"Unsupported Utility Network association type '{type}'.")
+        "connectivity" => GenericConnectivityType(association, sources),
+        _ => throw new InvalidOperationException($"Unsupported Utility Network association type '{association.Type}'.")
     };
+
+    // Older Utility Network services return the broad value "connectivity". The
+    // source roles and percent-along value identify the concrete Pro SDK operation
+    // required to recreate it.
+    private static string GenericConnectivityType(ServiceAssociation association, IReadOnlyDictionary<int, NetworkSourceInfo> sources)
+    {
+        if (association.PercentAlong is not null) return "JunctionEdgeObjectConnectivityMidspan";
+        if (!sources.TryGetValue(association.FromNetworkSourceId, out var from) || !sources.TryGetValue(association.ToNetworkSourceId, out var to))
+            throw new InvalidOperationException("A connectivity association references a Utility Network source that is not available in the active map.");
+        if (from.Type == SourceType.Junction && to.Type == SourceType.Junction) return "JunctionJunctionConnectivity";
+        if (from.Type == SourceType.Edge) return "JunctionEdgeObjectConnectivityFromSide";
+        if (to.Type == SourceType.Edge) return "JunctionEdgeObjectConnectivityToSide";
+        throw new InvalidOperationException($"Could not determine the concrete connectivity type for sources '{from.Name}' and '{to.Name}'.");
+    }
 
     private static Dictionary<int, NetworkSourceInfo> UtilityNetworkSources(Map map)
     {
@@ -682,7 +699,7 @@ internal sealed class VersionDifferenceCapture
         using var utilityNetwork = networkLayer.GetUtilityNetwork();
         using var definition = utilityNetwork.GetDefinition();
         return definition.GetNetworkSources()
-            .Select(source => new NetworkSourceInfo(source.ID, source.Name))
+            .Select(source => new NetworkSourceInfo(source.ID, source.Name, source.Type))
             .ToDictionary(source => source.Id);
     }
 
@@ -744,7 +761,7 @@ internal sealed class VersionDifferenceCapture
         }
     }
 
-    private sealed record NetworkSourceInfo(int Id, string Name);
+    private sealed record NetworkSourceInfo(int Id, string Name, SourceType Type);
     private sealed record NetworkElement(int NetworkSourceId, string GlobalId);
     private sealed record ServiceAssociation(string GlobalId, int FromNetworkSourceId, string FromGlobalId, long? FromTerminalId,
         int ToNetworkSourceId, string ToGlobalId, long? ToTerminalId, string Type, bool? IsContentVisible, double? PercentAlong)
