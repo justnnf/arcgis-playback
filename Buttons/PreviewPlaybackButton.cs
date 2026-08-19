@@ -21,7 +21,7 @@ internal sealed class PreviewPlaybackButton : Button
             await new PlaybackService().ZoomToRecordedExtentAsync(package);
             stage = "drawing the preview overlays";
             await RecorderHost.Preview.ShowAsync(package);
-            MessageBox.Show("Preview drawn on the map. Blue = add/update; red = delete. No edits were made. Use Clear Preview to remove it.", "ArcGIS Playback");
+            MessageBox.Show("Preview drawn on the map. Gold = new features; blue = edits to existing features; red = deletes. No edits were made. Use Clear Preview to remove it.", "ArcGIS Playback");
         }
         catch (Exception ex) { MessageBox.Show($"Could not preview playback while {stage}: {ex.Message}", "ArcGIS Playback"); }
     }

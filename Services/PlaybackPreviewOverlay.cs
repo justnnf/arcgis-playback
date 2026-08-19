@@ -54,7 +54,7 @@ internal sealed class PlaybackPreviewOverlay
                 BorderThickness = new Thickness(1),
                 CornerRadius = new CornerRadius(4),
                 Padding = new Thickness(9, 5, 9, 5),
-                Child = new TextBlock { Text = $"PREVIEW ACTIVE  •  {preview.Count} feature geometries\nBlue add/update  •  Red delete", Foreground = Brushes.White, FontWeight = FontWeights.SemiBold }
+                Child = new TextBlock { Text = $"PREVIEW ACTIVE  •  {preview.Count} feature geometries\nGold new  •  Blue existing edits  •  Red deletes", Foreground = Brushes.White, FontWeight = FontWeights.SemiBold }
             }, true, true, true, OverlayControlRelativePosition.TopLeft, .02, .08);
             preview.MapView.AddOverlayControl(_label);
         });
@@ -102,8 +102,10 @@ internal sealed class PlaybackPreviewOverlay
     {
         var color = type switch
         {
+            ChangeOperationType.AddFeature => ColorFactory.Instance.CreateRGBColor(255, 193, 7),
+            ChangeOperationType.UpdateFeature => ColorFactory.Instance.CreateRGBColor(0, 122, 194),
             ChangeOperationType.DeleteFeature => ColorFactory.Instance.CreateRGBColor(211, 47, 47),
-            _ => ColorFactory.Instance.CreateRGBColor(0, 122, 194)
+            _ => ColorFactory.Instance.CreateRGBColor(128, 128, 128)
         };
         return geometry switch
         {
