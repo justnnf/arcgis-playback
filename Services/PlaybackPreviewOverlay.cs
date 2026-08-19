@@ -4,6 +4,7 @@ using System.Windows.Controls;
 using System.Windows.Media;
 using ArcGIS.Core.CIM;
 using ArcGIS.Core.Geometry;
+using ArcGIS.Desktop.Framework.Threading.Tasks;
 using ArcGIS.Desktop.Mapping;
 using NetworkChangePlaybackAddin.Models;
 
@@ -21,20 +22,21 @@ internal sealed class PlaybackPreviewOverlay
         await ClearAsync();
         var mapView = await System.Windows.Application.Current.Dispatcher.InvokeAsync(() => MapView.Active)
             ?? throw new InvalidOperationException("Open and activate a map before previewing playback.");
-        _mapView = mapView;
-        var count = 0;
-        foreach (var operation in package.Operations.Where(operation => operation.Type is ChangeOperationType.AddFeature or ChangeOperationType.UpdateFeature or ChangeOperationType.DeleteFeature))
-        {
-            var geometry = GeometryFromOperation(operation);
-            if (geometry is null) continue;
-            // The synchronous overlay API requires the map view's owning UI thread.
-            // The asynchronous form marshals to that dispatcher for us, which is
-            // important because ribbon button handlers are not guaranteed to run there.
-            _graphics.Add(await mapView.AddOverlayAsync(geometry, SymbolFor(operation.Type, geometry).MakeSymbolReference()));
-            count++;
-        }
+        var graphics = await QueuedTask.Run(() => package.Operations
+            .Where(operation => operation.Type is ChangeOperationType.AddFeature or ChangeOperationType.UpdateFeature or ChangeOperationType.DeleteFeature)
+            .Select(operation =>
+            {
+                var geometry = GeometryFromOperation(operation);
+                return geometry is null ? null : new PreviewGraphic(geometry, SymbolFor(operation.Type, geometry).MakeSymbolReference());
+            })
+            .Where(graphic => graphic is not null)
+            .Cast<PreviewGraphic>()
+            .ToList());
+
         await System.Windows.Application.Current.Dispatcher.InvokeAsync(() =>
         {
+            _mapView = mapView;
+            foreach (var graphic in graphics) _graphics.Add(mapView.AddOverlay(graphic.Geometry, graphic.Symbol));
             _label = new MapViewOverlayControl(new Border
             {
                 Background = new SolidColorBrush(Color.FromArgb(235, 31, 35, 40)),
@@ -42,7 +44,7 @@ internal sealed class PlaybackPreviewOverlay
                 BorderThickness = new Thickness(1),
                 CornerRadius = new CornerRadius(4),
                 Padding = new Thickness(9, 5, 9, 5),
-                Child = new TextBlock { Text = $"PREVIEW ACTIVE  •  {count} feature geometries\nBlue add/update  •  Red delete", Foreground = Brushes.White, FontWeight = FontWeights.SemiBold }
+                Child = new TextBlock { Text = $"PREVIEW ACTIVE  •  {graphics.Count} feature geometries\nBlue add/update  •  Red delete", Foreground = Brushes.White, FontWeight = FontWeights.SemiBold }
             }, true, true, true, OverlayControlRelativePosition.TopLeft, .02, .08);
             mapView.AddOverlayControl(_label);
         });
@@ -88,4 +90,6 @@ internal sealed class PlaybackPreviewOverlay
             _ => SymbolFactory.Instance.ConstructPointSymbol(color, 9, SimpleMarkerStyle.Circle)
         };
     }
+
+    private sealed record PreviewGraphic(ArcGIS.Core.Geometry.Geometry Geometry, CIMSymbolReference Symbol);
 }

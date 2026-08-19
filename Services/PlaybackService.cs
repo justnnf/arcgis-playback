@@ -39,8 +39,9 @@ internal sealed class PlaybackService
         {
             var mapView = await System.Windows.Application.Current.Dispatcher.InvokeAsync(() => MapView.Active);
             if (mapView is null) return;
-            var extent = EnvelopeBuilderEx.FromJson(package.Metadata.RecordedMapExtentJson);
-            await mapView.ZoomToAsync(extent);
+            var extent = await QueuedTask.Run(() => EnvelopeBuilderEx.FromJson(package.Metadata.RecordedMapExtentJson));
+            var zoomTask = await System.Windows.Application.Current.Dispatcher.InvokeAsync(() => mapView.ZoomToAsync(extent));
+            await zoomTask;
         }
         catch
         {
