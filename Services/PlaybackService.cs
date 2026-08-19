@@ -34,11 +34,13 @@ internal sealed class PlaybackService
 
     internal async Task ZoomToRecordedExtentAsync(ChangePackage package)
     {
-        if (string.IsNullOrWhiteSpace(package.Metadata.RecordedMapExtentJson) || MapView.Active is null) return;
+        if (string.IsNullOrWhiteSpace(package.Metadata.RecordedMapExtentJson)) return;
         try
         {
+            var mapView = await System.Windows.Application.Current.Dispatcher.InvokeAsync(() => MapView.Active);
+            if (mapView is null) return;
             var extent = EnvelopeBuilderEx.FromJson(package.Metadata.RecordedMapExtentJson);
-            await MapView.Active.ZoomToAsync(extent);
+            await mapView.ZoomToAsync(extent);
         }
         catch
         {

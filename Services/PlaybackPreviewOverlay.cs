@@ -19,7 +19,8 @@ internal sealed class PlaybackPreviewOverlay
     internal async Task ShowAsync(ChangePackage package)
     {
         await ClearAsync();
-        var mapView = MapView.Active ?? throw new InvalidOperationException("Open and activate a map before previewing playback.");
+        var mapView = await System.Windows.Application.Current.Dispatcher.InvokeAsync(() => MapView.Active)
+            ?? throw new InvalidOperationException("Open and activate a map before previewing playback.");
         _mapView = mapView;
         var count = 0;
         foreach (var operation in package.Operations.Where(operation => operation.Type is ChangeOperationType.AddFeature or ChangeOperationType.UpdateFeature or ChangeOperationType.DeleteFeature))
