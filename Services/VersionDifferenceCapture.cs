@@ -1,5 +1,4 @@
 using System.Text.Json.Nodes;
-using System.Text.Json;
 using System.Net.Http;
 using System.IO;
 using ArcGIS.Core.Data;
@@ -125,9 +124,23 @@ internal sealed class VersionDifferenceCapture
             CapturedAtUtc = DateTimeOffset.UtcNow
         };
         var package = new ChangePackage { Metadata = metadata };
-        package.Operations.AddRange(operations.Select((operation, index) => operation with { Sequence = index + 1 }));
+        // Associations must be removed before their endpoint features are deleted,
+        // while new endpoint features must exist before their associations are made.
+        // Version differences describe final state rather than edit order, so make
+        // that dependency order explicit in the generated playback package.
+        package.Operations.AddRange(operations.OrderBy(PlaybackOrder)
+            .Select((operation, index) => operation with { Sequence = index + 1 }));
         return new CaptureResult(package, skipped);
     }
+
+    private static int PlaybackOrder(ChangeOperation operation) => operation.Type switch
+    {
+        ChangeOperationType.AddFeature or ChangeOperationType.UpdateFeature => 0,
+        ChangeOperationType.DeleteAssociation => 1,
+        ChangeOperationType.AddAssociation => 2,
+        ChangeOperationType.DeleteFeature => 3,
+        _ => 4
+    };
 
     private static IEnumerable<MapMember> MapMembers(Map map) => map.GetLayersAsFlattenedList()
         .OfType<FeatureLayer>().Cast<MapMember>()
@@ -509,61 +522,56 @@ internal sealed class VersionDifferenceCapture
             throw new InvalidOperationException($"{layerName}: the service reported {operation} object ID(s) that could not be read ({string.Join(", ", missing)}). Capture was stopped to avoid an incomplete playback package.");
     }
 
-    // The differences endpoint does not include utility-network associations. Query
-    // the affected endpoint elements in both versions and derive association adds and
-    // deletes from their authoritative association snapshots.
+    // The differences endpoint does not include utility-network associations. The
+    // associations system table is authoritative and, unlike an endpoint query,
+    // also exposes association-only edits (where neither endpoint feature changed).
     private static void CaptureBranchAssociationDelta(Map map, EsriHttpClient client, string featureServiceUrl, string sourceVersion,
         string defaultVersionName, JsonNode serviceInfo, IReadOnlyDictionary<int, string> layerNames, List<ChangeOperation> operations)
     {
-        var affected = operations.Where(operation => operation.Type is ChangeOperationType.AddFeature or ChangeOperationType.UpdateFeature or ChangeOperationType.DeleteFeature)
-            .Where(operation => !string.IsNullOrWhiteSpace(operation.SourceGlobalId))
-            .ToList();
-        if (affected.Count == 0) return;
-
-        // Avoid probing UtilityNetworkServer for ordinary feature services, where a
-        // 404 would be unrelated to version-difference capture.
-        if (serviceInfo["utilityNetworkLayerId"] is null) return;
-
-        var utilityUrl = featureServiceUrl.Replace("/FeatureServer", "/UtilityNetworkServer", StringComparison.OrdinalIgnoreCase).TrimEnd('/');
         var networkSources = UtilityNetworkSources(map);
         if (networkSources.Count == 0)
             throw new InvalidOperationException("The active Utility Network did not expose source IDs needed to capture association changes.");
 
-        var sourceByName = networkSources.Values.ToDictionary(source => source.Name, StringComparer.OrdinalIgnoreCase);
-        var sourceById = networkSources;
-        var affectedElements = affected.Select(operation =>
-        {
-            var source = sourceByName.GetValueOrDefault(operation.LayerName ?? string.Empty);
-            return source is null ? null : new NetworkElement(source.Id, operation.SourceGlobalId!);
-        }).Where(element => element is not null).Cast<NetworkElement>().Distinct().ToList();
-        if (affectedElements.Count == 0) return;
+        var utilityNetworkLayerId = serviceInfo["utilityNetworkLayerId"]?.GetValue<int?>()
+            ?? throw new InvalidOperationException("The feature service did not expose its Utility Network layer ID, so association changes cannot be captured safely.");
+        var utilityNetworkInfo = GetJson(client, $"{featureServiceUrl.TrimEnd('/')}/{utilityNetworkLayerId}?f=json");
+        var associationsTableId = utilityNetworkInfo["systemLayers"]?["associationsTableId"]?.GetValue<int?>()
+            ?? throw new InvalidOperationException("The Utility Network did not expose an associations system table, so association changes cannot be captured safely.");
 
-        var current = QueryAssociations(client, utilityUrl, sourceVersion, affectedElements);
-        var baseline = QueryAssociations(client, utilityUrl, defaultVersionName, affectedElements);
-        var added = current.Where(pair => !baseline.ContainsKey(pair.Key)).Select(pair => pair.Value).ToList();
-        var removed = baseline.Where(pair => !current.ContainsKey(pair.Key)).Select(pair => pair.Value).ToList();
+        var current = QueryAssociationTable(client, featureServiceUrl, associationsTableId, sourceVersion);
+        var baseline = QueryAssociationTable(client, featureServiceUrl, associationsTableId, defaultVersionName);
+        // A changed association uses the same GlobalID. Represent it as a remove
+        // followed by an add so terminal, visibility, and position changes replay.
+        var added = current.Where(pair => !baseline.TryGetValue(pair.Key, out var old) || old != pair.Value).Select(pair => pair.Value).ToList();
+        var removed = baseline.Where(pair => !current.TryGetValue(pair.Key, out var replacement) || replacement != pair.Value).Select(pair => pair.Value).ToList();
         if (added.Count == 0 && removed.Count == 0) return;
 
-        var currentReferences = QueryAssociationReferences(client, featureServiceUrl, sourceVersion, added, sourceById, layerNames, operations);
-        var baselineReferences = QueryAssociationReferences(client, featureServiceUrl, defaultVersionName, removed, sourceById, layerNames, operations);
-        foreach (var association in added)
-            operations.Add(new ChangeOperation { Type = ChangeOperationType.AddAssociation, Association = ToAssociationReference(association, currentReferences) });
+        var currentReferences = QueryAssociationReferences(client, featureServiceUrl, sourceVersion, added, networkSources, layerNames, operations);
+        var baselineReferences = QueryAssociationReferences(client, featureServiceUrl, defaultVersionName, removed, networkSources, layerNames, operations);
         foreach (var association in removed)
             operations.Add(new ChangeOperation { Type = ChangeOperationType.DeleteAssociation, Association = ToAssociationReference(association, baselineReferences) });
+        foreach (var association in added)
+            operations.Add(new ChangeOperation { Type = ChangeOperationType.AddAssociation, Association = ToAssociationReference(association, currentReferences) });
     }
 
-    private static Dictionary<string, ServiceAssociation> QueryAssociations(EsriHttpClient client, string utilityUrl, string version,
-        IReadOnlyList<NetworkElement> elements)
+    private static Dictionary<string, ServiceAssociation> QueryAssociationTable(EsriHttpClient client, string serviceUrl, int tableId, string version)
     {
         var result = new Dictionary<string, ServiceAssociation>(StringComparer.OrdinalIgnoreCase);
-        foreach (var batch in elements.Chunk(QueryBatchSize))
+        var tableUrl = $"{serviceUrl.TrimEnd('/')}/{tableId}/query";
+        var idsResponse = PostJson(client, tableUrl,
+            $"f=json&where=1%3D1&returnIdsOnly=true&gdbVersion={Uri.EscapeDataString(version)}");
+        var objectIds = idsResponse["objectIds"]?.AsArray()
+            .Select(node => node?.GetValue<long>() ?? throw new InvalidDataException("The associations table returned an invalid object ID."))
+            .ToList() ?? [];
+        foreach (var batch in objectIds.Chunk(QueryBatchSize))
         {
-            var elementsJson = JsonSerializer.Serialize(batch.Select(element => new { networkSourceId = element.NetworkSourceId, globalId = element.GlobalId }));
-            var response = PostJson(client, $"{utilityUrl}/associations/query",
-                $"f=json&gdbVersion={Uri.EscapeDataString(version)}&elements={Uri.EscapeDataString(elementsJson)}");
-            foreach (var node in response["associations"]?.AsArray() ?? [])
+            var response = PostJson(client, tableUrl,
+                $"f=json&objectIds={string.Join(",", batch)}&outFields=*&returnGeometry=false&gdbVersion={Uri.EscapeDataString(version)}");
+            foreach (var feature in response["features"]?.AsArray() ?? [])
             {
-                var association = ServiceAssociation.From(node);
+                if (feature?["attributes"] is not JsonObject attributes)
+                    throw new InvalidDataException("The associations table returned a row without attributes.");
+                var association = ServiceAssociation.FromAttributes(attributes);
                 result[association.GlobalId] = association;
             }
         }
@@ -726,23 +734,40 @@ internal sealed class VersionDifferenceCapture
     private sealed record ServiceAssociation(string GlobalId, int FromNetworkSourceId, string FromGlobalId, long? FromTerminalId,
         int ToNetworkSourceId, string ToGlobalId, long? ToTerminalId, string Type, bool? IsContentVisible, double? PercentAlong)
     {
-        internal static ServiceAssociation From(JsonNode? node) => new(
-            node?["globalId"]?.ToString() ?? throw new InvalidDataException("The association response is missing globalId."),
-            node?["fromNetworkSourceId"]?.GetValue<int>() ?? throw new InvalidDataException("The association response is missing fromNetworkSourceId."),
-            node?["fromGlobalId"]?.ToString() ?? throw new InvalidDataException("The association response is missing fromGlobalId."),
-            TerminalId(node?["fromTerminalId"]),
-            node?["toNetworkSourceId"]?.GetValue<int>() ?? throw new InvalidDataException("The association response is missing toNetworkSourceId."),
-            node?["toGlobalId"]?.ToString() ?? throw new InvalidDataException("The association response is missing toGlobalId."),
-            TerminalId(node?["toTerminalId"]),
-            node?["associationType"]?.ToString() ?? throw new InvalidDataException("The association response is missing associationType."),
-            node?["isContentVisible"]?.GetValue<bool?>(),
-            node?["percentAlong"]?.GetValue<double?>());
+        internal static ServiceAssociation FromAttributes(JsonObject attributes) => new(
+            RequiredText(attributes, "globalid"),
+            RequiredInt(attributes, "fromnetworksourceid"),
+            RequiredText(attributes, "fromglobalid"),
+            TerminalId(attributes, "fromterminalid"),
+            RequiredInt(attributes, "tonetworksourceid"),
+            RequiredText(attributes, "toglobalid"),
+            TerminalId(attributes, "toterminalid"),
+            RequiredText(attributes, "associationtype"),
+            BooleanValue(attributes, "iscontentvisible"),
+            DoubleValue(attributes, "percentalong"));
 
-        private static long? TerminalId(JsonNode? node)
+        private static string RequiredText(JsonObject attributes, string fieldName) => AttributeText(attributes, fieldName)
+            ?? throw new InvalidDataException($"The associations table is missing {fieldName}.");
+
+        private static int RequiredInt(JsonObject attributes, string fieldName) => int.TryParse(AttributeText(attributes, fieldName), out var value)
+            ? value
+            : throw new InvalidDataException($"The associations table has an invalid {fieldName}.");
+
+        private static long? TerminalId(JsonObject attributes, string fieldName) => long.TryParse(AttributeText(attributes, fieldName), out var id) && id > -1
+            ? id
+            : null;
+
+        private static bool? BooleanValue(JsonObject attributes, string fieldName)
         {
-            var id = node?.GetValue<long?>();
-            return id is > -1 ? id : null;
+            var value = AttributeText(attributes, fieldName);
+            if (string.IsNullOrWhiteSpace(value)) return null;
+            if (bool.TryParse(value, out var boolean)) return boolean;
+            return long.TryParse(value, out var integer) ? integer != 0 : null;
         }
+
+        private static double? DoubleValue(JsonObject attributes, string fieldName) => double.TryParse(AttributeText(attributes, fieldName), out var value)
+            ? value
+            : null;
     }
 }
 
