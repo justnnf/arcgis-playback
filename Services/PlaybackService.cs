@@ -83,6 +83,23 @@ internal sealed class PlaybackService
         {
             var operation = operations[_nextOperationIndex];
             Report(operation, "Applying");
+            if (IsSystemManagedOutput(operation.LayerName))
+            {
+                result.AlreadySatisfied++;
+                Report(operation, "Excluded", "System-managed Utility Network output is never replayed.");
+                _nextOperationIndex++;
+                continue;
+            }
+            // Version-capture 0.5.18 could classify a generic endpoint
+            // connectivity association as midspan when the service supplied a
+            // default PercentAlong of zero. Suppress that legacy false-positive.
+            if (operation.Association?.AssociationType == "JunctionEdgeObjectConnectivityMidspan" && operation.Association.PercentAlong == 0)
+            {
+                result.AlreadySatisfied++;
+                Report(operation, "Excluded", "A zero-percent midspan association is not replayed.");
+                _nextOperationIndex++;
+                continue;
+            }
             if (operation.Type is ChangeOperationType.AddAssociation or ChangeOperationType.DeleteAssociation)
             {
                 try
@@ -518,7 +535,12 @@ internal sealed class PlaybackService
         var result = new Dictionary<string, object>(StringComparer.OrdinalIgnoreCase);
         foreach (var pair in attributes)
         {
-            if (!fields.TryGetValue(pair.Key, out var field) || !field.IsEditable) continue;
+            if (!fields.TryGetValue(pair.Key, out var field)) continue;
+            // FacilityID is the identity used by playback to locate source assets.
+            // Copy it explicitly even where the layer metadata reports it as a
+            // managed field; if the target truly forbids it, the edit will surface a
+            // clear error instead of silently dropping the value.
+            if (!field.IsEditable && !string.Equals(field.Name, "FACILITYID", StringComparison.OrdinalIgnoreCase)) continue;
             if (string.Equals(field.Name, "GLOBALID", StringComparison.OrdinalIgnoreCase)) continue;
             if (field.FieldType == FieldType.Geometry)
             {
@@ -530,6 +552,9 @@ internal sealed class PlaybackService
         }
         return result;
     }
+
+    private static bool IsSystemManagedOutput(string? layerName) => !string.IsNullOrWhiteSpace(layerName) &&
+        string.Concat(layerName.Where(char.IsLetterOrDigit)).EndsWith("ELECTRICSUBNETLINE", StringComparison.OrdinalIgnoreCase);
 
     private static object? ConvertValue(JsonNode? value, FieldType type)
     {

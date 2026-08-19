@@ -202,7 +202,7 @@ internal sealed class VersionDifferenceCapture
         SupplementalCaptureSources.Contains(NormalizeName(name));
 
     private static bool IsExcludedUtilityNetworkSource(string name) =>
-        ExcludedUtilityNetworkSources.Contains(NormalizeName(name));
+        ExcludedUtilityNetworkSources.Any(excluded => NormalizeName(name).EndsWith(excluded, StringComparison.OrdinalIgnoreCase));
 
     private static bool SameNormalizedName(string left, string right) =>
         string.Equals(NormalizeName(left), NormalizeName(right), StringComparison.OrdinalIgnoreCase);
@@ -683,10 +683,13 @@ internal sealed class VersionDifferenceCapture
     // required to recreate it.
     private static string GenericConnectivityType(ServiceAssociation association, IReadOnlyDictionary<int, NetworkSourceInfo> sources)
     {
-        if (association.PercentAlong is not null) return "JunctionEdgeObjectConnectivityMidspan";
         if (!sources.TryGetValue(association.FromNetworkSourceId, out var from) || !sources.TryGetValue(association.ToNetworkSourceId, out var to))
             throw new InvalidOperationException("A connectivity association references a Utility Network source that is not available in the active map.");
         if (from.Type == SourceType.Junction && to.Type == SourceType.Junction) return "JunctionJunctionConnectivity";
+        // Services return 0 for PercentAlong on ordinary endpoint connectivity,
+        // so it is not, by itself, proof of a midspan association. Only a value
+        // strictly inside an edge identifies a midspan connection.
+        if (association.PercentAlong is > 0 and < 1) return "JunctionEdgeObjectConnectivityMidspan";
         if (from.Type == SourceType.Edge) return "JunctionEdgeObjectConnectivityFromSide";
         if (to.Type == SourceType.Edge) return "JunctionEdgeObjectConnectivityToSide";
         throw new InvalidOperationException($"Could not determine the concrete connectivity type for sources '{from.Name}' and '{to.Name}'.");

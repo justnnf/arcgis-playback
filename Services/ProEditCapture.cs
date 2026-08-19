@@ -97,6 +97,7 @@ internal sealed class ProEditCapture
             using var definition = table.GetDefinition();
             var fields = definition.GetFields();
             var tableName = CanonicalTableName(table.GetName());
+            if (IsSystemManagedOutput(tableName)) return;
             var rowKey = $"{tableName}|{row.GetObjectID()}";
             var captureKey = $"{args.Guid:N}|{rowKey}|{type}";
             if (!_capturedRows.Add(captureKey)) return;
@@ -289,6 +290,9 @@ internal sealed class ProEditCapture
 
     private string CanonicalTableName(string tableName) =>
         _networkSourceNames.TryGetValue(tableName, out var sourceName) ? sourceName : tableName;
+
+    private static bool IsSystemManagedOutput(string tableName) =>
+        string.Concat(tableName.Where(char.IsLetterOrDigit)).EndsWith("ELECTRICSUBNETLINE", StringComparison.OrdinalIgnoreCase);
 
     private List<string>? AssociationAnchorFacilityIds(string? sourceGlobalId)
     {
