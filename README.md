@@ -2,17 +2,6 @@
 
 ArcGIS Playback is an ArcGIS Pro 3.3 add-in for recording an editing session as a portable `.unplayback.json` change package, then replaying that package into a target utility-network map. It is intended for controlled pre-production-to-production migration where production GlobalIDs differ and `FacilityID` is the durable business identifier.
 
-## Build and release
-
-The release version is in [`Configuration/BuildVersion.props`](Configuration/BuildVersion.props). Change `ArcGISPlaybackVersion` before a distributable build.
-
-```powershell
-cd C:\Code\arcgis-playback\NetworkChangePlaybackAddin
-dotnet build .\NetworkChangePlaybackAddin.csproj -c Release
-```
-
-The build copies the package to `release\ArcGISPlayback.ArcPro.3.3.v<version>.esriAddinX`. The `release` directory is intentionally not tracked by Git. Install the resulting `.esriAddinX` into ArcGIS Pro.
-
 ## Workflow
 
 1. In the source/pre-production map, choose **Start Recording** and enter the ArcFM session name, package attribution, description, file name, and destination. The active branch version is prefilled and can be corrected if required.
@@ -34,9 +23,3 @@ For an edit or association involving an existing feature, populate `FacilityID` 
 The recorder journals feature and object-table creates, updates, deletes, geometry edits, and association changes observed through normal Pro edit events. To protect ArcGIS Pro’s edit pipeline, event callbacks record in memory; packages are saved every 15 seconds and when **Save Recording** is used. Association reads are debounced until editing is idle and serialized so they do not compete with placement tools. Replay supports subtype feature layers and subtype object tables, including association endpoints represented by subtype layers/tables.
 
 The source map extent is recorded with the package and playback zooms the active map to it before edits begin. Always use a clean target version and validate a representative package before production. Replay is intentionally interactive on unresolved rows and failed operations; it does not silently substitute a GlobalID from pre-production. Existing associations are recognized as already satisfied rather than reported as failures. Attachments, inspection/work-management records, traces, subnetworks, and integration-specific side effects require their own tested capture/replay rules before they are migration-ready.
-
-## Layout
-
-- `Configuration/BuildVersion.props` — single release-version setting.
-- `Config.daml` — ArcGIS Pro add-in metadata.
-- `release` — generated distributable output, ignored by Git.
