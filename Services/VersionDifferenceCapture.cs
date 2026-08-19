@@ -65,7 +65,7 @@ internal sealed class VersionDifferenceCapture
             // Branch-versioned maps are normally feature-service connections. Do not
             // call Version.Connect here: client-server connections can return no direct
             // DEFAULT geodatabase even though the REST Version Management API is valid.
-            CaptureBranchServiceDelta(members, sourceVersion, ref defaultVersionName, operations, skipped);
+            CaptureBranchServiceDelta(map, members, sourceVersion, ref defaultVersionName, operations, skipped);
         }
         else
         {
@@ -93,7 +93,7 @@ internal sealed class VersionDifferenceCapture
         if (operations.Count == 0 && skipped.Count > 0)
         {
             skipped.Clear();
-            CaptureBranchServiceDelta(members, sourceVersion, ref defaultVersionName, operations, skipped);
+            CaptureBranchServiceDelta(map, members, sourceVersion, ref defaultVersionName, operations, skipped);
         }
 
         if (operations.Count == 0 && skipped.Count > 0)
@@ -168,6 +168,44 @@ internal sealed class VersionDifferenceCapture
         return eligible;
     }
 
+    // Subtype group child layers frequently have a subtype display name instead of
+    // the service's Utility Network source name. Resolve them through the UN table
+    // identity so a differences response such as "ElectricDevice" finds its map
+    // source regardless of the subtype layer names shown in the Contents pane.
+    private static Dictionary<string, MapMember> UtilityNetworkSourceMembers(Map map, IReadOnlyList<MapMember> members)
+    {
+        var result = new Dictionary<string, MapMember>(StringComparer.OrdinalIgnoreCase);
+        var networkLayer = map.GetLayersAsFlattenedList().OfType<UtilityNetworkLayer>().FirstOrDefault();
+        if (networkLayer is null) return result;
+        using var utilityNetwork = networkLayer.GetUtilityNetwork();
+        using var definition = utilityNetwork.GetDefinition();
+        foreach (var source in definition.GetNetworkSources())
+        {
+            try
+            {
+                using var sourceTable = utilityNetwork.GetTable(source);
+                var member = members.FirstOrDefault(candidate =>
+                {
+                    try
+                    {
+                        using var table = GetTable(candidate);
+                        return string.Equals(table.GetName(), sourceTable.GetName(), StringComparison.OrdinalIgnoreCase);
+                    }
+                    catch (Exception ex) when (ex is InvalidOperationException or GeodatabaseException)
+                    {
+                        return false;
+                    }
+                });
+                if (member is not null) result[source.Name] = member;
+            }
+            catch (GeodatabaseException)
+            {
+                // The source is not published in the active map/service.
+            }
+        }
+        return result;
+    }
+
     private static Table GetTable(MapMember member) => member switch
     {
         FeatureLayer layer => layer.GetTable() ?? throw new InvalidOperationException($"{layer.Name} does not currently expose a readable table. Remove the broken layer or reconnect it before capturing."),
@@ -217,9 +255,10 @@ internal sealed class VersionDifferenceCapture
         }
     }
 
-    private static void CaptureBranchServiceDelta(IReadOnlyList<MapMember> members, string sourceVersion, ref string defaultVersionName,
+    private static void CaptureBranchServiceDelta(Map map, IReadOnlyList<MapMember> members, string sourceVersion, ref string defaultVersionName,
         List<ChangeOperation> operations, List<string> skipped)
     {
+        var utilityNetworkMembers = UtilityNetworkSourceMembers(map, members);
         var serviceMembers = members.Select(ServiceMember.From).ToList();
         foreach (var member in serviceMembers.Where(item => item.ServiceUrl is null))
             skipped.Add($"{member.Member.Name}: not connected to a feature-service layer and was not captured.");
@@ -262,7 +301,10 @@ internal sealed class VersionDifferenceCapture
                 continue;
             }
             var serviceMember = serviceMembers.FirstOrDefault(item => item.LayerId == layerId)
-                ?? serviceMembers.FirstOrDefault(item => string.Equals(item.DatasetName, sourceName, StringComparison.OrdinalIgnoreCase));
+                ?? serviceMembers.FirstOrDefault(item => string.Equals(item.DatasetName, sourceName, StringComparison.OrdinalIgnoreCase))
+                ?? (utilityNetworkMembers.TryGetValue(sourceName, out var utilityNetworkMember)
+                    ? serviceMembers.FirstOrDefault(item => ReferenceEquals(item.Member, utilityNetworkMember))
+                    : null);
             if (serviceMember is null)
             {
                 skipped.Add($"{sourceName}: this changed service layer is not present in the active map.");
