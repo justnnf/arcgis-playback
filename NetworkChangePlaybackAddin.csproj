@@ -27,14 +27,24 @@
     <Content Include="Images\*.png" />
     <Content Include="DarkImages\*.png" />
   </ItemGroup>
+
+  <ItemGroup>
+    <None Remove="release\ArcGISPlayback.ArcPro.3.3.v.0.5.10.esriAddinX" />
+    <None Remove="release\ArcGISPlayback.ArcPro.3.3.v.0.5.11.esriAddinX" />
+    <None Remove="release\ArcGISPlayback.ArcPro.3.3.v.0.5.12.esriAddinX" />
+    <None Remove="release\ArcGISPlayback.ArcPro.3.3.v.0.5.13.esriAddinX" />
+    <None Remove="release\ArcGISPlayback.ArcPro.3.3.v.0.5.14.esriAddinX" />
+    <None Remove="release\ArcGISPlayback.ArcPro.3.3.v.0.5.15.esriAddinX" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Folder Include="release\" />
+  </ItemGroup>
   <!-- Use the installed SDK only for packaging; API references remain pinned to 3.3 above. -->
-  <Import Project="C:\Program Files\ArcGIS\Pro\bin\Esri.ProApp.SDK.Desktop.targets"
-          Condition="Exists('C:\Program Files\ArcGIS\Pro\bin\Esri.ProApp.SDK.Desktop.targets')" />
+  <Import Project="C:\Program Files\ArcGIS\Pro\bin\Esri.ProApp.SDK.Desktop.targets" Condition="Exists('C:\Program Files\ArcGIS\Pro\bin\Esri.ProApp.SDK.Desktop.targets')" />
 
   <Target Name="CopyPackageToRelease" AfterTargets="PackageArcGISContents">
     <MakeDir Directories="$(ReleaseDirectory)" />
-    <Copy SourceFiles="$(PackageFile)"
-          DestinationFiles="$(ReleaseDirectory)$(ReleasePackageFileName)"
-          Condition="Exists('$(PackageFile)')" />
+    <Copy SourceFiles="$(PackageFile)" DestinationFiles="$(ReleaseDirectory)$(ReleasePackageFileName)" Condition="Exists('$(PackageFile)')" />
   </Target>
 </Project>
