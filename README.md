@@ -29,7 +29,7 @@ For an edit or association involving an existing feature, populate `FacilityID` 
 
 ## Scope and safeguards
 
-The recorder journals feature and object-table creates, updates, deletes, geometry edits, and association changes observed through normal Pro edit events. Replay supports subtype feature layers and subtype object tables, including association endpoints represented by subtype layers/tables.
+The recorder journals feature and object-table creates, updates, deletes, geometry edits, and association changes observed through normal Pro edit events. To protect ArcGIS Pro’s edit pipeline, event callbacks record in memory; packages are saved every 15 seconds and when **Save Recording** is used. Association reads are debounced until editing is idle and serialized so they do not compete with placement tools. Replay supports subtype feature layers and subtype object tables, including association endpoints represented by subtype layers/tables.
 
 Always use a clean target version and validate a representative package before production. Replay is intentionally interactive on unresolved rows and failed operations; it does not silently substitute a GlobalID from pre-production. Attachments, inspection/work-management records, traces, subnetworks, and integration-specific side effects require their own tested capture/replay rules before they are migration-ready.
 

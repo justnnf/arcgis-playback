@@ -12,14 +12,20 @@ namespace NetworkChangePlaybackAddin.Services;
 /// <summary>Captures row-level Pro edits from the map that was active when recording started.</summary>
 internal sealed class ProEditCapture
 {
+    private static readonly TimeSpan AssociationIdleDelay = TimeSpan.FromSeconds(2);
     private readonly PackageRecorder _recorder;
     private readonly List<(SubscriptionToken Create, SubscriptionToken Change, SubscriptionToken Delete)> _subscriptions = [];
     private readonly HashSet<string> _capturedRows = new(StringComparer.Ordinal);
     private readonly Dictionary<string, string> _packageFeatureIds = new(StringComparer.Ordinal);
     private readonly Dictionary<string, AssociationReference> _associationSnapshot = new(StringComparer.Ordinal);
     private readonly Dictionary<string, AssociationEndpoint> _associationEndpoints = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, string> _networkSourceNames = new(StringComparer.OrdinalIgnoreCase);
+    private readonly List<Table> _subscribedTables = [];
+    private readonly object _associationScanGate = new();
     private SubscriptionToken? _editCompletedSubscription;
     private UtilityNetworkLayer? _utilityNetworkLayer;
+    private CancellationTokenSource? _associationScanDelay;
+    private bool _associationScanRunning;
 
     internal ProEditCapture(PackageRecorder recorder) => _recorder = recorder;
 
@@ -32,27 +38,29 @@ internal sealed class ProEditCapture
             _packageFeatureIds.Clear();
             var map = MapView.Active?.Map ?? throw new InvalidOperationException("Open and activate a map before recording.");
             _utilityNetworkLayer = map.GetLayersAsFlattenedList().OfType<UtilityNetworkLayer>().FirstOrDefault();
-            var tables = new List<Table>();
-            tables.AddRange(map.GetLayersAsFlattenedList().OfType<FeatureLayer>().Select(layer => layer.GetTable()));
-            tables.AddRange(map.GetStandaloneTablesAsFlattenedList().Select(table => table.GetTable()));
+            CacheNetworkSourceNames();
+            _subscribedTables.AddRange(map.GetLayersAsFlattenedList().OfType<FeatureLayer>().Select(layer => layer.GetTable()));
+            _subscribedTables.AddRange(map.GetStandaloneTablesAsFlattenedList().Select(table => table.GetTable()));
 
-            foreach (var table in tables)
+            foreach (var table in _subscribedTables)
             {
                 _subscriptions.Add((
                     RowCreatedEvent.Subscribe(OnRowCreated, table, true),
                     RowChangedEvent.Subscribe(OnRowChanged, table, true),
                     RowDeletedEvent.Subscribe(OnRowDeleted, table, true)));
             }
-            CaptureAssociationSnapshot(recordChanges: false);
             _editCompletedSubscription = EditCompletedEvent.Subscribe(OnEditCompleted, true);
         });
     }
 
     internal async Task StopAsync()
     {
-        if (_subscriptions.Count == 0) return;
+        CancelAssociationScan();
         await QueuedTask.Run(() =>
         {
+            // Perform one authoritative scan only after editing has stopped. Doing this
+            // after every row edit can contend with placement tools and destabilize Pro.
+            if (_recorder.ActivePackage is not null) CaptureAssociationSnapshot(recordChanges: true);
             foreach (var subscription in _subscriptions)
             {
                 RowCreatedEvent.Unsubscribe(subscription.Create);
@@ -60,10 +68,13 @@ internal sealed class ProEditCapture
                 RowDeletedEvent.Unsubscribe(subscription.Delete);
             }
             _subscriptions.Clear();
+            foreach (var table in _subscribedTables) table.Dispose();
+            _subscribedTables.Clear();
             if (_editCompletedSubscription is not null) EditCompletedEvent.Unsubscribe(_editCompletedSubscription);
             _editCompletedSubscription = null;
             _associationSnapshot.Clear();
             _associationEndpoints.Clear();
+            _networkSourceNames.Clear();
             _utilityNetworkLayer = null;
         });
     }
@@ -75,13 +86,17 @@ internal sealed class ProEditCapture
     private void Record(RowChangedEventArgs args, ChangeOperationType type)
     {
         if (_recorder.ActivePackage is null) return;
+        CancelAssociationScan();
         try
         {
             var row = args.Row;
             // Pro can raise duplicate notifications while one edit operation builds a row.
             // Keep one entry for each row/event type, but retain Create followed by Change
             // because that is meaningful when a new asset is immediately populated.
-            var tableName = row.GetTable().GetName();
+            using var table = row.GetTable();
+            using var definition = table.GetDefinition();
+            var fields = definition.GetFields();
+            var tableName = CanonicalTableName(table.GetName());
             var rowKey = $"{tableName}|{row.GetObjectID()}";
             var captureKey = $"{args.Guid:N}|{rowKey}|{type}";
             if (!_capturedRows.Add(captureKey)) return;
@@ -89,15 +104,15 @@ internal sealed class ProEditCapture
                 _packageFeatureIds[rowKey] = $"package:{Guid.NewGuid():N}";
             if (type != ChangeOperationType.DeleteFeature)
                 _associationEndpoints[rowKey] = new AssociationEndpoint(tableName, row.GetObjectID());
-            var attributes = Attributes(row);
+            var attributes = Attributes(row, fields);
             _recorder.Record(new ChangeOperation
             {
                 Type = type,
                 LayerName = tableName,
                 SourceObjectId = row.GetObjectID(),
-                SourceGlobalId = FieldValue(row, "GLOBALID"),
+                SourceGlobalId = FieldValue(row, fields, "GLOBALID"),
                 PackageFeatureId = _packageFeatureIds.GetValueOrDefault(rowKey),
-                FacilityId = FieldValue(row, "FACILITYID"),
+                FacilityId = FieldValue(row, fields, "FACILITYID"),
                 After = type == ChangeOperationType.DeleteFeature ? null : attributes,
                 Before = type == ChangeOperationType.DeleteFeature ? attributes : null
             });
@@ -111,7 +126,52 @@ internal sealed class ProEditCapture
     private Task OnEditCompleted(EditCompletedEventArgs args)
     {
         if (_recorder.ActivePackage is null) return Task.CompletedTask;
-        return QueuedTask.Run(() => CaptureAssociationSnapshot(recordChanges: true));
+        ScheduleAssociationScan();
+        return Task.CompletedTask;
+    }
+
+    private void ScheduleAssociationScan()
+    {
+        CancellationTokenSource delay;
+        lock (_associationScanGate)
+        {
+            _associationScanDelay?.Cancel();
+            _associationScanDelay?.Dispose();
+            delay = _associationScanDelay = new CancellationTokenSource();
+        }
+        _ = ScanWhenEditingIsIdleAsync(delay.Token);
+    }
+
+    private async Task ScanWhenEditingIsIdleAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            await Task.Delay(AssociationIdleDelay, cancellationToken).ConfigureAwait(false);
+            if (cancellationToken.IsCancellationRequested || _recorder.ActivePackage is null) return;
+            await QueuedTask.Run(() =>
+            {
+                lock (_associationScanGate)
+                {
+                    if (cancellationToken.IsCancellationRequested || _associationScanRunning) return;
+                    _associationScanRunning = true;
+                }
+                try { CaptureAssociationSnapshot(recordChanges: true); }
+                catch { /* Association capture must never interrupt editing. */ }
+                finally { lock (_associationScanGate) _associationScanRunning = false; }
+            });
+        }
+        catch (OperationCanceledException) { }
+        catch { /* Never surface a background capture error through the Pro event pump. */ }
+    }
+
+    private void CancelAssociationScan()
+    {
+        lock (_associationScanGate)
+        {
+            _associationScanDelay?.Cancel();
+            _associationScanDelay?.Dispose();
+            _associationScanDelay = null;
+        }
     }
 
     // Associations are stored by the Utility Network, not as normal endpoint-row edits.
@@ -166,47 +226,76 @@ internal sealed class ProEditCapture
     private FeatureReference ToFeatureReference(UtilityNetwork utilityNetwork, Element element)
     {
         using var table = utilityNetwork.GetTable(element.NetworkSource);
+        using var definition = table.GetDefinition();
+        var fields = definition.GetFields();
         using var cursor = table.Search(new QueryFilter { ObjectIDs = [element.ObjectID] }, false);
         if (!cursor.MoveNext()) throw new InvalidOperationException($"Could not read association endpoint {element.NetworkSource.Name}/{element.ObjectID}.");
         using var row = cursor.Current;
-        var rowKey = $"{table.GetName()}|{element.ObjectID}";
+        var tableName = CanonicalTableName(table.GetName());
+        var rowKey = $"{tableName}|{element.ObjectID}";
         return new FeatureReference
         {
-            LayerName = table.GetName(),
+            LayerName = tableName,
             SourceGlobalId = element.GlobalID.ToString(),
-            FacilityId = FieldValue(row, "FACILITYID"),
+            FacilityId = FieldValue(row, fields, "FACILITYID"),
             PackageFeatureId = _packageFeatureIds.GetValueOrDefault(rowKey),
-            AssetGroup = IntFieldValue(row, "ASSETGROUP"),
-            AssetType = IntFieldValue(row, "ASSETTYPE")
+            AssetGroup = IntFieldValue(row, fields, "ASSETGROUP"),
+            AssetType = IntFieldValue(row, fields, "ASSETTYPE")
         };
     }
+
+    // Feature-service maps can prefix a physical table with a portal/service label
+    // (for example, "L2"). Packages must instead carry the UN source name, which is
+    // stable across maps and is what playback uses to resolve subtype layers/tables.
+    private void CacheNetworkSourceNames()
+    {
+        _networkSourceNames.Clear();
+        if (_utilityNetworkLayer is null) return;
+        try
+        {
+            using var utilityNetwork = _utilityNetworkLayer.GetUtilityNetwork();
+            using var definition = utilityNetwork.GetDefinition();
+            foreach (var source in definition.GetNetworkSources())
+            {
+                using var table = utilityNetwork.GetTable(source);
+                _networkSourceNames[table.GetName()] = source.Name;
+            }
+        }
+        catch
+        {
+            // Ordinary non-UN tables use their table name as before.
+        }
+    }
+
+    private string CanonicalTableName(string tableName) =>
+        _networkSourceNames.TryGetValue(tableName, out var sourceName) ? sourceName : tableName;
 
     private static string AssociationKey(Association association, AssociationReference reference) =>
         string.IsNullOrWhiteSpace(reference.SourceAssociationGlobalId)
             ? $"{reference.AssociationType}|{reference.From.SourceGlobalId}|{reference.To.SourceGlobalId}|{reference.FromTerminalId}|{reference.ToTerminalId}|{reference.PercentAlong}"
             : reference.SourceAssociationGlobalId;
 
-    private static string? FieldValue(Row row, string fieldName)
+    private static string? FieldValue(Row row, IReadOnlyList<Field> fields, string fieldName)
     {
-        var field = row.GetTable().GetDefinition().GetFields()
+        var field = fields
             .FirstOrDefault(candidate => string.Equals(candidate.Name, fieldName, StringComparison.OrdinalIgnoreCase));
         if (field is null) return null;
         var value = row[field.Name];
         return value is null || value is DBNull ? null : value.ToString();
     }
 
-    private static int? IntFieldValue(Row row, string fieldName)
+    private static int? IntFieldValue(Row row, IReadOnlyList<Field> fields, string fieldName)
     {
-        var text = FieldValue(row, fieldName);
+        var text = FieldValue(row, fields, fieldName);
         return int.TryParse(text, out var value) ? value : null;
     }
 
     private sealed record AssociationEndpoint(string TableName, long ObjectId);
 
-    private static JsonObject Attributes(Row row)
+    private static JsonObject Attributes(Row row, IReadOnlyList<Field> fields)
     {
         var values = new JsonObject();
-        foreach (var field in row.GetTable().GetDefinition().GetFields())
+        foreach (var field in fields)
         {
             if (field.FieldType is FieldType.Blob or FieldType.Raster) continue;
             var value = row[field.Name];
@@ -218,7 +307,8 @@ internal sealed class ProEditCapture
 
             if (field.FieldType == FieldType.Geometry && row is Feature feature)
             {
-                values[field.Name] = JsonNode.Parse(feature.GetShape().ToJson());
+                var shape = feature.GetShape();
+                values[field.Name] = JsonNode.Parse(shape.ToJson());
                 continue;
             }
 

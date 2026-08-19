@@ -6,8 +6,12 @@ namespace NetworkChangePlaybackAddin.Services;
 
 public sealed class PackageRecorder
 {
+    private static readonly TimeSpan AutoSaveInterval = TimeSpan.FromSeconds(15);
     private static readonly JsonSerializerOptions JsonOptions = new() { WriteIndented = true, PropertyNamingPolicy = JsonNamingPolicy.CamelCase };
     private readonly object _gate = new();
+    private readonly SemaphoreSlim _writeGate = new(1, 1);
+    private Timer? _autoSaveTimer;
+    private bool _dirty;
 
     public ChangePackage? ActivePackage { get; private set; }
     public string? ActiveFilePath { get; private set; }
@@ -21,8 +25,10 @@ public sealed class PackageRecorder
             if (ActivePackage is not null) throw new InvalidOperationException("A recording is already active.");
             ActivePackage = new ChangePackage { Metadata = metadata };
             ActiveFilePath = filePath;
-            SaveUnsafe(); // Persist metadata immediately so a started recording is never invisible.
+            _dirty = true;
+            _autoSaveTimer = new Timer(_ => _ = FlushAsync(), null, AutoSaveInterval, AutoSaveInterval);
         }
+        SaveNow(); // Persist metadata once, outside the Pro edit event pipeline.
     }
 
     public void Record(ChangeOperation operation)
@@ -33,22 +39,32 @@ public sealed class PackageRecorder
             var package = ActivePackage ?? throw new InvalidOperationException("No recording is active.");
             savedOperation = operation with { Sequence = package.Operations.Count + 1 };
             package.Operations.Add(savedOperation);
-            SaveUnsafe();
+            _dirty = true;
         }
         OperationRecorded?.Invoke(savedOperation);
     }
 
     public string StopAndSave()
     {
+        Timer? timer;
+        string path;
+        string contents;
         lock (_gate)
         {
             if (ActivePackage is null || ActiveFilePath is null) throw new InvalidOperationException("No recording is active.");
-            SaveUnsafe();
-            var path = ActiveFilePath;
+            timer = _autoSaveTimer;
+            _autoSaveTimer = null;
+            path = ActiveFilePath;
+            contents = SerializeUnsafe();
             ActivePackage = null;
             ActiveFilePath = null;
-            return path;
+            _dirty = false;
         }
+        timer?.Dispose();
+        _writeGate.Wait();
+        try { Write(path, contents); }
+        finally { _writeGate.Release(); }
+        return path;
     }
 
     public static ChangePackage Read(string path)
@@ -58,14 +74,55 @@ public sealed class PackageRecorder
             ?? throw new InvalidDataException("The selected file is not a change package.");
     }
 
-    private void SaveUnsafe()
+    private void SaveNow()
+    {
+        string? path;
+        string? contents;
+        lock (_gate)
+        {
+            if (ActivePackage is null || ActiveFilePath is null) return;
+            path = ActiveFilePath;
+            contents = SerializeUnsafe();
+            _dirty = false;
+        }
+        _writeGate.Wait();
+        try { Write(path, contents); }
+        finally { _writeGate.Release(); }
+    }
+
+    private async Task FlushAsync()
+    {
+        string? path;
+        string? contents;
+        lock (_gate)
+        {
+            if (!_dirty || ActivePackage is null || ActiveFilePath is null) return;
+            path = ActiveFilePath;
+            contents = SerializeUnsafe();
+            _dirty = false;
+        }
+        await _writeGate.WaitAsync().ConfigureAwait(false);
+        try { Write(path, contents); }
+        catch
+        {
+            lock (_gate) { if (ActivePackage is not null && ActiveFilePath == path) _dirty = true; }
+        }
+        finally { _writeGate.Release(); }
+    }
+
+    private string SerializeUnsafe()
     {
         var package = ActivePackage!;
         package.LastSavedAtUtc = DateTimeOffset.UtcNow;
-        var folder = Path.GetDirectoryName(ActiveFilePath!);
+        return JsonSerializer.Serialize(package, JsonOptions);
+    }
+
+    private static void Write(string path, string contents)
+    {
+        var folder = Path.GetDirectoryName(path);
         if (!string.IsNullOrEmpty(folder)) Directory.CreateDirectory(folder);
-        var temporaryPath = ActiveFilePath + ".tmp";
-        File.WriteAllText(temporaryPath, JsonSerializer.Serialize(package, JsonOptions));
-        File.Move(temporaryPath, ActiveFilePath!, overwrite: true);
+        var temporaryPath = path + ".tmp";
+        File.WriteAllText(temporaryPath, contents);
+        File.Move(temporaryPath, path, overwrite: true);
     }
 }
