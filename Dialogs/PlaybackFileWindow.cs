@@ -9,11 +9,13 @@ namespace NetworkChangePlaybackAddin.Dialogs;
 internal sealed class PlaybackFileWindow : Window
 {
     private readonly TextBox _filePath = new();
+    private readonly bool _preview;
     internal string? FilePath { get; private set; }
 
-    internal PlaybackFileWindow()
+    internal PlaybackFileWindow(bool preview = false)
     {
-        Title = "Playback Recording";
+        _preview = preview;
+        Title = preview ? "Preview Playback" : "Playback Recording";
         Width = 680;
         Height = 300;
         MinWidth = 560;
@@ -27,8 +29,16 @@ internal sealed class PlaybackFileWindow : Window
         root.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star), MinHeight = 18 });
         root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
         var heading = new StackPanel { Margin = new Thickness(0, 0, 0, 18) };
-        heading.Children.Add(DialogAppearance.SectionTitle("Playback a recorded change package"));
-        heading.Children.Add(new TextBlock { Text = "Select the .unplayback.json file to apply to the active production map.", Foreground = DialogAppearance.Foreground, Opacity = .72, Margin = new Thickness(0, 4, 0, 0) });
+        heading.Children.Add(DialogAppearance.SectionTitle(preview ? "Draw a playback preview" : "Playback a recorded change package"));
+        heading.Children.Add(new TextBlock
+        {
+            Text = preview
+                ? "Select the .unplayback.json file to draw its changes as temporary map overlays. No edits will be made."
+                : "Select the .unplayback.json file to apply to the active production map.",
+            Foreground = DialogAppearance.Foreground,
+            Opacity = .72,
+            Margin = new Thickness(0, 4, 0, 0)
+        });
         root.Children.Add(heading);
         var fileRow = new Grid { Margin = new Thickness(0, 0, 0, 14) };
         fileRow.ColumnDefinitions.Add(new ColumnDefinition());
@@ -45,7 +55,7 @@ internal sealed class PlaybackFileWindow : Window
         var cancel = DialogAppearance.SecondaryButton("Cancel", 82);
         cancel.Margin = new Thickness(0, 0, 8, 0);
         cancel.Click += (_, _) => Close();
-        var play = DialogAppearance.PrimaryButton("Replay", 82);
+        var play = DialogAppearance.PrimaryButton(preview ? "Draw Preview" : "Replay", preview ? 110 : 82);
         play.IsDefault = true;
         play.Click += (_, _) => Confirm();
         actions.Children.Add(cancel);
@@ -55,7 +65,7 @@ internal sealed class PlaybackFileWindow : Window
         _filePath.Background = DialogAppearance.InputBackground;
         _filePath.Foreground = DialogAppearance.Foreground;
         _filePath.BorderBrush = DialogAppearance.Border;
-        Content = DialogAppearance.WithChrome(this, "Playback Recording", root);
+        Content = DialogAppearance.WithChrome(this, Title, root);
     }
 
     private void Browse()
@@ -68,7 +78,7 @@ internal sealed class PlaybackFileWindow : Window
     {
         if (!File.Exists(_filePath.Text))
         {
-            MessageBox.Show(this, "Choose an existing playback package.", Title, MessageBoxButton.OK, MessageBoxImage.Warning);
+            MessageBox.Show(this, _preview ? "Choose an existing playback package to preview." : "Choose an existing playback package.", Title, MessageBoxButton.OK, MessageBoxImage.Warning);
             return;
         }
         FilePath = _filePath.Text;

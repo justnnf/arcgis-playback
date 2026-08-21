@@ -11,7 +11,7 @@ internal sealed class PreviewPlaybackButton : Button
 
     private async void PreviewAsync()
     {
-        var window = new PlaybackFileWindow { Owner = System.Windows.Application.Current?.MainWindow };
+        var window = new PlaybackFileWindow(preview: true) { Owner = System.Windows.Application.Current?.MainWindow };
         if (window.ShowDialog() != true || window.FilePath is null) return;
         var stage = "reading the playback package";
         try

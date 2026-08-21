@@ -45,7 +45,13 @@ internal sealed class PlaybackPreviewOverlay
 
             foreach (var graphic in graphics) _graphics.Add(mapView.AddOverlay(graphic.Geometry, graphic.Symbol));
             if (graphics.Count > 0)
-                mapView.ZoomTo(GeometryEngine.Instance.Union(graphics.Select(graphic => graphic.Geometry)).Extent.Expand(1.5, 1.5, true));
+            {
+                // GeometryEngine.Union requires compatible geometry types. A package can
+                // legitimately include points, lines, and polygons, so calculate the
+                // common zoom extent from their envelopes instead.
+                var previewExtent = GeometryEngine.Instance.Union(graphics.Select(graphic => graphic.Geometry.Extent));
+                mapView.ZoomTo(previewExtent.Extent.Expand(1.5, 1.5, true));
+            }
             return new Preview(mapView, graphics.Count);
         });
 
